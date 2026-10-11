@@ -1,0 +1,27 @@
+<Entity>
+    <Base file="data/entities/base_item.xml">
+    </Base>
+
+    <SpriteComponent
+        _tags="item,enabled_in_world,enabled_in_hand"
+        image_file="data/items_gfx/potion.png"
+        next_rect_animation="default"
+        rect_animation="default"
+        z_index="-1.5">
+    </SpriteComponent>
+
+    <ItemComponent
+        _tags="enabled_in_world"
+        is_pickable="1"
+        is_equipable_forced="1"
+        item_name="Spell Organizer"
+        ui_sprite="data/ui_gfx/items/potion.png"
+        ui_description="A portable organizer for discovered spells."
+        preferred_inventory="QUICK">
+    </ItemComponent>
+
+    <UIInfoComponent
+        _tags="enabled_in_world"
+        name="Spell Organizer">
+    </UIInfoComponent>
+</Entity>
