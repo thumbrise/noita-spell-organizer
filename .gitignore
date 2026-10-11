@@ -1,3 +1,11 @@
 # Noita mod build/runtime artifacts
 *.log
 *.tmp
+
+# noita_dev runtime output
+/crashes/
+/playbacks/
+/save00/
+/logger.txt
+/log_asserts.txt
+/docs/TODO_errors.md
