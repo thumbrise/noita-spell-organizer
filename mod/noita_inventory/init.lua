@@ -5,7 +5,6 @@ local OPEN_KEY_CODE = 5 -- SDL keycode for B, see data/scripts/debug/keycodes.lu
 local ESCAPE_KEY_CODE = 41
 local organizer_gui = GuiCreate()
 local organizer_open = false
-local target_wand = nil
 
 function OnModInit()
     print("[NoitaInventory] loaded")
@@ -147,24 +146,55 @@ local function move_one_spell(spell, destination)
     return true
 end
 
+local function inventory_contains_item(player, item)
+    local items = GameGetAllInventoryItems(player)
+    if items == nil then
+        return false
+    end
+
+    for _, inventory_item in ipairs(items) do
+        if inventory_item == item then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function move_one_spell_to_inventory(spell, player)
+    if spell == nil or player == nil then
+        return false, "invalid_item"
+    end
+
+    -- Use Noita's own pickup flow. It owns slot assignment and naturally
+    -- rejects items if the inventory has no room.
+    local x, y = EntityGetTransform(player)
+    EntitySetTransform(spell, x, y)
+    GamePickUpInventoryItem(player, spell, false)
+
+    if inventory_contains_item(player, spell) then
+        return true
+    end
+
+    return false, "inventory_full"
+end
+
 local function get_inventory_spells(player)
     local result = {}
-    local quick_inventory = get_quick_inventory(player)
-    if quick_inventory == nil then
+    local items = GameGetAllInventoryItems(player)
+    if items == nil then
         return result
     end
 
-    local wands = EntityGetAllChildren(quick_inventory)
-    if wands == nil then
-        return result
-    end
-
-    -- Noita stores spell cards as children of wand entities, not as direct
-    -- children of inventory_quick. This remains read-only until a transfer is clicked.
-    for _, wand in ipairs(wands) do
-        if EntityHasTag(wand, "wand") then
-            for _, spell in ipairs(get_entity_spells(wand)) do
-                result[spell.action_id] = (result[spell.action_id] or 0) + 1
+    for _, spell in ipairs(items) do
+        local action_component = EntityGetFirstComponentIncludingDisabled(spell, "ItemActionComponent")
+        local parent = EntityGetParent(spell)
+        -- Current inner loop only exposes cards already in a player inventory
+        -- container. Cards nested inside wands are intentionally excluded.
+        if action_component ~= nil and parent ~= nil and parent ~= 0 and not EntityHasTag(parent, "wand") then
+            local action_id = ComponentGetValue2(action_component, "action_id")
+            if action_id ~= nil and action_id ~= "" then
+                table.insert(result, { entity = spell, action_id = action_id })
             end
         end
     end
@@ -172,28 +202,10 @@ local function get_inventory_spells(player)
     return result
 end
 
-local function get_wand_capacity_status(wand)
-    local ability = EntityGetFirstComponentIncludingDisabled(wand, "AbilityComponent")
-    if ability == nil then
-        return 0, 0
-    end
-    local capacity = ComponentObjectGetValue2(ability, "gun_config", "deck_capacity")
-    if type(capacity) ~= "number" then
-        return 0, 0
-    end
-    local spell_count = #get_entity_spells(wand)
-    return spell_count, capacity
-end
-
 function OnWorldPostUpdate()
     local player = get_player()
     if player == nil then
         return
-    end
-
-    local current_item = get_active_item(player)
-    if not organizer_open and current_item ~= nil and EntityHasTag(current_item, "wand") then
-        target_wand = current_item
     end
 
     -- The organizer is a contextual modal: switching away from the book
@@ -216,17 +228,10 @@ function OnWorldPostUpdate()
     end
 
     local organizer = get_active_item(player)
-    local wand_spells = {}
-    if target_wand ~= nil and EntityGetIsAlive(target_wand) then
-        wand_spells = get_entity_spells(target_wand)
-    end
+    local player_spells = get_inventory_spells(player)
     local organizer_spells = get_entity_spells(organizer)
-    local wand_groups = sort_groups(group_spells(wand_spells))
+    local player_groups = sort_groups(group_spells(player_spells))
     local organizer_groups = sort_groups(group_spells(organizer_spells))
-    local wand_count, wand_capacity = 0, 0
-    if target_wand ~= nil and EntityGetIsAlive(target_wand) then
-        wand_count, wand_capacity = get_wand_capacity_status(target_wand)
-    end
 
     GuiStartFrame(organizer_gui)
     local screen_width, screen_height = GuiGetScreenDimensions(organizer_gui)
@@ -235,16 +240,12 @@ function OnWorldPostUpdate()
 
     GuiText(organizer_gui, panel_x, panel_y, "SPELL ORGANIZER")
     GuiText(organizer_gui, panel_x, panel_y + 15, "One card per transfer")
-    GuiText(organizer_gui, panel_x, panel_y + 38, "Current wand " .. tostring(wand_count) .. "/" .. tostring(wand_capacity))
+    GuiText(organizer_gui, panel_x, panel_y + 38, "Inventory")
 
-    local row = 0
-    for index, group in ipairs(wand_groups) do
+    local inventory_row = 0
+    for index, group in ipairs(player_groups) do
         local count = #group.entities
-        local label = "Store " .. group.action_id .. " x" .. tostring(count)
-        if wand_count >= wand_capacity then
-            label = label .. " (full)"
-        end
-        local clicked = GuiButton(organizer_gui, 1000 + index, panel_x, panel_y + 55 + row * 16, label)
+        local clicked = GuiButton(organizer_gui, 1000 + index, panel_x, panel_y + 55 + inventory_row * 16, "Store " .. group.action_id .. " x" .. tostring(count))
         if clicked then
             local moved, reason = move_one_spell(group.entities[1], organizer)
             if moved then
@@ -253,41 +254,35 @@ function OnWorldPostUpdate()
                 GamePrint("NoitaInventory: transfer failed (" .. tostring(reason) .. ")")
             end
         end
-        row = row + 1
+        inventory_row = inventory_row + 1
     end
-
-    if row == 0 then
-        GuiText(organizer_gui, panel_x, panel_y + 55, "No cards in target wand")
-        row = 1
+    if inventory_row == 0 then
+        GuiText(organizer_gui, panel_x, panel_y + 55, "No spells in inventory")
+        inventory_row = 1
     end
 
     local storage_x = panel_x + 190
     GuiText(organizer_gui, storage_x, panel_y + 38, "Organizer")
-    local storage_row = 0
+    local organizer_row = 0
     for index, group in ipairs(organizer_groups) do
         local count = #group.entities
-        local clicked = GuiButton(organizer_gui, 2000 + index, storage_x, panel_y + 55 + storage_row * 16, "Return " .. group.action_id .. " x" .. tostring(count))
+        local clicked = GuiButton(organizer_gui, 2000 + index, storage_x, panel_y + 55 + organizer_row * 16, "Return " .. group.action_id .. " x" .. tostring(count))
         if clicked then
-            if target_wand ~= nil and EntityGetIsAlive(target_wand) then
-                local moved, reason = move_one_spell(group.entities[1], target_wand)
-                if moved then
-                    print("[NoitaInventory] returned one spell: " .. group.action_id)
-                else
-                    GamePrint("NoitaInventory: transfer failed (" .. tostring(reason) .. ")")
-                end
+            local moved, reason = move_one_spell_to_inventory(group.entities[1], player)
+            if moved then
+                print("[NoitaInventory] returned one spell to inventory: " .. group.action_id)
             else
-                GamePrint("NoitaInventory: target wand is unavailable")
+                GamePrint("NoitaInventory: transfer failed (" .. tostring(reason) .. ")")
             end
         end
-        storage_row = storage_row + 1
+        organizer_row = organizer_row + 1
     end
-
-    if storage_row == 0 then
+    if organizer_row == 0 then
         GuiText(organizer_gui, storage_x, panel_y + 55, "Empty")
-        storage_row = 1
+        organizer_row = 1
     end
 
-    local close_y = panel_y + 75 + math.max(row, storage_row) * 16
+    local close_y = panel_y + 75 + math.max(inventory_row, organizer_row) * 16
     local close_clicked = GuiButton(organizer_gui, 1, panel_x, close_y, "Close")
     if close_clicked then
         organizer_open = false
