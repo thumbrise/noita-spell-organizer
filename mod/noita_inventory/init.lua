@@ -12,13 +12,12 @@ local PANEL_H = 180
 local CELL_SIZE = 28
 local CELL_GAP = 3
 local PICKUP_RADIUS = 24
-local PICKUP_COOLDOWN_FRAMES = 8
-local pickup_cooldown = 0
 
 local function is_world_spell_candidate(entity, player)
     if entity == nil or entity == 0 or entity == player or not EntityGetIsAlive(entity) then
         return false
     end
+
 
     if not EntityHasTag(entity, "card_action") then
         return false
@@ -35,38 +34,78 @@ local function is_world_spell_candidate(entity, player)
     return EntityGetFirstComponentIncludingDisabled(entity, "ItemActionComponent") ~= nil
 end
 
-local function try_pickup_world_spell(player, organizer)
-    if pickup_cooldown > 0 then
+local function absorb_one(spell, source, organizer)
+    if not EntityGetIsAlive(spell) or EntityGetParent(spell) ~= source then
         return false
     end
-    local x, y = EntityGetTransform(player)
-
-    local candidates = EntityGetInRadiusWithTag(x, y, PICKUP_RADIUS, "card_action") or {}
-    for _, entity in ipairs(candidates) do
-        if is_world_spell_candidate(entity, player) then
-            local action = EntityGetFirstComponentIncludingDisabled(entity, "ItemActionComponent")
-            local action_id = ComponentGetValue2(action, "action_id")
-            -- Disable world-active physics before reparenting the exact card,
-            -- otherwise its old world presentation can persist until reequip.
-            EntitySetComponentsWithTagEnabled(entity, "enabled_in_world", false)
-            EntityRemoveFromParent(entity)
-            EntityAddChild(organizer, entity)
-            if EntityGetParent(entity) == organizer then
-                pickup_cooldown = PICKUP_COOLDOWN_FRAMES
-                GamePlaySound("data/audio/Desktop/misc.bank", "misc/chest_dark_open", x, y)
-                print("[NoitaInventory] absorbed world spell: " .. tostring(action_id))
-                return true
-            end
-            EntitySetComponentsWithTagEnabled(entity, "enabled_in_world", true)
-        end
+    if source == 0 then
+        EntitySetComponentsWithTagEnabled(spell, "enabled_in_world", false)
     end
+    EntityRemoveFromParent(spell)
+    EntityAddChild(organizer, spell)
+    if EntityGetParent(spell) == organizer then
+        return true
+    end
+    EntityRemoveFromParent(spell)
+    if source ~= 0 then
+        EntityAddChild(source, spell)
+    else
+        EntitySetComponentsWithTagEnabled(spell, "enabled_in_world", true)
+    end
+    print("[NoitaInventory] absorb failed: " .. tostring(spell))
     return false
 end
 
-local function tick_pickup_cooldown()
-    if pickup_cooldown > 0 then
-        pickup_cooldown = pickup_cooldown - 1
+local function absorb_available_spells(player, organizer)
+    local count = 0
+    local full_inventory = nil
+    for _, child in ipairs(EntityGetAllChildren(player) or {}) do
+        if EntityGetName(child) == "inventory_full" then
+            full_inventory = child
+            break
+        end
     end
+    if full_inventory ~= nil then
+        for _, spell in ipairs(EntityGetAllChildren(full_inventory) or {}) do
+            -- Direct children of inventory_full are already owned by the player;
+            -- a historical shop cost must not block a legitimately purchased card.
+            local action = EntityGetFirstComponentIncludingDisabled(spell, "ItemActionComponent")
+            local action_id = action and ComponentGetValue2(action, "action_id")
+            if EntityHasTag(spell, "card_action") and action_id ~= nil and action_id ~= "" then
+                if absorb_one(spell, full_inventory, organizer) then
+                    count = count + 1
+                end
+            end
+        end
+    end
+    local x, y = EntityGetTransform(player)
+    for _, spell in ipairs(EntityGetInRadiusWithTag(x, y, PICKUP_RADIUS, "card_action") or {}) do
+        if is_world_spell_candidate(spell, player) then
+            local action = EntityGetFirstComponentIncludingDisabled(spell, "ItemActionComponent")
+            local action_id = ComponentGetValue2(action, "action_id")
+            if action_id ~= nil and action_id ~= "" and absorb_one(spell, 0, organizer) then
+                count = count + 1
+            end
+        end
+    end
+    if count > 0 then
+        GamePlaySound("data/audio/Desktop/misc.bank", "misc/chest_dark_open", x, y)
+    end
+    return count
+end
+
+local function drop_one_spell_from_organizer(spell, player)
+    if spell == nil or player == nil then
+        return false
+    end
+    local x, y = EntityGetTransform(player)
+    EntityRemoveFromParent(spell)
+    if EntityGetParent(spell) ~= 0 then
+        return false
+    end
+    EntitySetTransform(spell, x, y + 12)
+    EntitySetComponentsWithTagEnabled(spell, "enabled_in_world", true)
+    return true
 end
 
 function OnModInit()
@@ -168,6 +207,8 @@ local function action_sprite(action_id)
     return "data/ui_gfx/gun_actions/" .. string.lower(action_id) .. ".png"
 end
 
+
+
 local function draw_spell_grid(groups, x, y, widget_prefix)
     local cells = {}
     local columns = 3
@@ -178,14 +219,26 @@ local function draw_spell_grid(groups, x, y, widget_prefix)
         local cell_y = y + row * (CELL_SIZE + CELL_GAP)
         GuiOptionsAdd(organizer_gui, GUI_OPTION.DrawAlwaysVisible)
         GuiZSet(organizer_gui, -100)
-        GuiImage(organizer_gui, 9137000 + index, cell_x, cell_y, action_sprite(group.action_id), 1, CELL_SIZE / 16, 0, 0, GUI_RECT_ANIMATION_PLAYBACK.PlayToEndAndPause)
+        GuiOptionsAddForNextWidget(organizer_gui, GUI_OPTION.DrawNoHoverAnimation)
+        local clicked = GuiImageButton(organizer_gui, 9137000 + index, cell_x, cell_y, "", action_sprite(group.action_id))
         GuiText(organizer_gui, cell_x + 21, cell_y + 20, tostring(#group.entities))
-        table.insert(cells, { x = cell_x, y = cell_y, group = group })
+        table.insert(cells, { group = group, clicked = clicked })
     end
     return cells
 end
 
 
+
+local function handle_organizer_clicks(cells, player)
+    for _, cell in ipairs(cells) do
+        if cell.clicked then
+            if drop_one_spell_from_organizer(cell.group.entities[1], player) then
+                print("[NoitaInventory] dropped one spell: " .. cell.group.action_id)
+            end
+            return
+        end
+    end
+end
 
 function OnWorldPostUpdate()
     local player = get_player()
@@ -193,18 +246,13 @@ function OnWorldPostUpdate()
         return
     end
 
-    tick_pickup_cooldown()
-
     if GameIsInventoryOpen() then
         organizer_open = false
     end
 
-    if active_item_is_organizer(player) then
-        try_pickup_world_spell(player, get_active_item(player))
-    end
-
     -- The organizer is tied to the selected book. Switching to a wand or
     -- another item must close the modal before the next frame is drawn.
+
     if organizer_open and not active_item_is_organizer(player) then
         organizer_open = false
         print("[NoitaInventory] organizer panel closed: organizer is no longer active")
@@ -240,6 +288,12 @@ function OnWorldPostUpdate()
     GuiText(organizer_gui, modal_x + 10, modal_y + 8, "SPELL ORGANIZER")
     GuiText(organizer_gui, grid_x, modal_y + 20, "Stored spells")
 
-    draw_spell_grid(organizer_groups, grid_x, grid_y, 2000)
+    local organizer_cells = draw_spell_grid(organizer_groups, grid_x, grid_y, 2000)
+    handle_organizer_clicks(organizer_cells, player)
+    GuiOptionsAddForNextWidget(organizer_gui, GUI_OPTION.DrawNoHoverAnimation)
+    if GuiButton(organizer_gui, 9137999, modal_x + 10, modal_y + PANEL_H - 22, "Absorb all") then
+        local count = absorb_available_spells(player, organizer)
+        GamePrint("Spell Organizer: absorbed " .. tostring(count))
+    end
 end
 
