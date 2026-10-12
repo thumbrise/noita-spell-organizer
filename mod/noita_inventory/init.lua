@@ -1,3 +1,5 @@
+dofile_once("data/scripts/lib/utilities.lua")
+
 -- Prototype controls: B opens/closes the organizer while it is selected;
 -- Escape closes the panel. This milestone only proves GUI lifecycle.
 local ORGANIZER_GIVEN_KEY = "NOITAINVENTORY_ORGANIZER_GIVEN"
@@ -5,6 +7,67 @@ local OPEN_KEY_CODE = 5 -- SDL keycode for B, see data/scripts/debug/keycodes.lu
 local ESCAPE_KEY_CODE = 41
 local organizer_gui = GuiCreate()
 local organizer_open = false
+local PANEL_W = 108
+local PANEL_H = 180
+local CELL_SIZE = 28
+local CELL_GAP = 3
+local PICKUP_RADIUS = 24
+local PICKUP_COOLDOWN_FRAMES = 8
+local pickup_cooldown = 0
+
+local function is_world_spell_candidate(entity, player)
+    if entity == nil or entity == 0 or entity == player or not EntityGetIsAlive(entity) then
+        return false
+    end
+
+    if not EntityHasTag(entity, "card_action") then
+        return false
+    end
+    if EntityHasTag(entity, "item_shop") or EntityHasTag(entity, "shop_cost") then
+        return false
+    end
+    if EntityGetFirstComponentIncludingDisabled(entity, "ItemCostComponent") ~= nil then
+        return false
+    end
+    if EntityGetParent(entity) ~= nil and EntityGetParent(entity) ~= 0 then
+        return false
+    end
+    return EntityGetFirstComponentIncludingDisabled(entity, "ItemActionComponent") ~= nil
+end
+
+local function try_pickup_world_spell(player, organizer)
+    if pickup_cooldown > 0 then
+        return false
+    end
+    local x, y = EntityGetTransform(player)
+
+    local candidates = EntityGetInRadiusWithTag(x, y, PICKUP_RADIUS, "card_action") or {}
+    for _, entity in ipairs(candidates) do
+        if is_world_spell_candidate(entity, player) then
+            local action = EntityGetFirstComponentIncludingDisabled(entity, "ItemActionComponent")
+            local action_id = ComponentGetValue2(action, "action_id")
+            -- Disable world-active physics before reparenting the exact card,
+            -- otherwise its old world presentation can persist until reequip.
+            EntitySetComponentsWithTagEnabled(entity, "enabled_in_world", false)
+            EntityRemoveFromParent(entity)
+            EntityAddChild(organizer, entity)
+            if EntityGetParent(entity) == organizer then
+                pickup_cooldown = PICKUP_COOLDOWN_FRAMES
+                GamePlaySound("data/audio/Desktop/misc.bank", "misc/chest_dark_open", x, y)
+                print("[NoitaInventory] absorbed world spell: " .. tostring(action_id))
+                return true
+            end
+            EntitySetComponentsWithTagEnabled(entity, "enabled_in_world", true)
+        end
+    end
+    return false
+end
+
+local function tick_pickup_cooldown()
+    if pickup_cooldown > 0 then
+        pickup_cooldown = pickup_cooldown - 1
+    end
+end
 
 function OnModInit()
     print("[NoitaInventory] loaded")
@@ -101,116 +164,28 @@ local function sort_groups(groups)
     return groups
 end
 
-local function move_one_spell(spell, destination)
-    if spell == nil or destination == nil then
-        return false, "invalid_item"
-    end
-
-    if EntityHasTag(destination, "wand") then
-        local capacity = EntityGetWandCapacity(destination)
-        local current_spells = get_entity_spells(destination)
-        if capacity <= 0 or #current_spells >= capacity then
-            return false, "wand_full"
-        end
-    end
-
-    local previous_parent = EntityGetParent(spell)
-    if previous_parent == nil or previous_parent == 0 then
-        return false, "item_has_no_parent"
-    end
-
-    EntityRemoveFromParent(spell)
-    EntityAddChild(destination, spell)
-
-    if EntityGetParent(spell) ~= destination then
-        EntityRemoveFromParent(spell)
-        EntityAddChild(previous_parent, spell)
-        return false, "transfer_failed"
-    end
-
-    return true
+local function action_sprite(action_id)
+    return "data/ui_gfx/gun_actions/" .. string.lower(action_id) .. ".png"
 end
 
-local function get_player_inventory_container(player, container_name)
-    local children = EntityGetAllChildren(player)
-    if children == nil then
-        return nil
+local function draw_spell_grid(groups, x, y, widget_prefix)
+    local cells = {}
+    local columns = 3
+    for index, group in ipairs(groups) do
+        local column = (index - 1) % columns
+        local row = math.floor((index - 1) / columns)
+        local cell_x = x + column * (CELL_SIZE + CELL_GAP)
+        local cell_y = y + row * (CELL_SIZE + CELL_GAP)
+        GuiOptionsAdd(organizer_gui, GUI_OPTION.DrawAlwaysVisible)
+        GuiZSet(organizer_gui, -100)
+        GuiImage(organizer_gui, 9137000 + index, cell_x, cell_y, action_sprite(group.action_id), 1, CELL_SIZE / 16, 0, 0, GUI_RECT_ANIMATION_PLAYBACK.PlayToEndAndPause)
+        GuiText(organizer_gui, cell_x + 21, cell_y + 20, tostring(#group.entities))
+        table.insert(cells, { x = cell_x, y = cell_y, group = group })
     end
-
-    for _, child in ipairs(children) do
-        if EntityGetName(child) == container_name then
-            return child
-        end
-    end
-
-    return nil
+    return cells
 end
 
-local function move_one_spell_to_inventory(spell, player)
-    if spell == nil or player == nil then
-        return false, "invalid_item"
-    end
 
-    local full_inventory = get_player_inventory_container(player, "inventory_full")
-    if full_inventory == nil then
-        return false, "inventory_unavailable"
-    end
-
-    local inventory2 = EntityGetFirstComponentIncludingDisabled(player, "Inventory2Component")
-    if inventory2 == nil then
-        return false, "inventory_unavailable"
-    end
-
-    local slots_x = ComponentGetValue2(inventory2, "full_inventory_slots_x") or 0
-    local slots_y = ComponentGetValue2(inventory2, "full_inventory_slots_y") or 0
-    local capacity = slots_x * slots_y
-    local items = EntityGetAllChildren(full_inventory) or {}
-    if capacity <= 0 or #items >= capacity then
-        return false, "inventory_full"
-    end
-
-    local previous_parent = EntityGetParent(spell)
-    if previous_parent == nil or previous_parent == 0 then
-        return false, "item_has_no_parent"
-    end
-
-    -- Place the exact spell entity into Noita's dedicated full-inventory
-    -- container. GameGetAllInventoryItems counts quick slots too, so it is not
-    -- used as the free-space check for this destination.
-    EntityRemoveFromParent(spell)
-    EntityAddChild(full_inventory, spell)
-
-    if EntityGetParent(spell) ~= full_inventory then
-        EntityRemoveFromParent(spell)
-        EntityAddChild(previous_parent, spell)
-        return false, "transfer_failed"
-    end
-
-    return true
-end
-
-local function get_inventory_spells(player)
-    local result = {}
-    local items = GameGetAllInventoryItems(player)
-    if items == nil then
-        return result
-    end
-
-    for _, spell in ipairs(items) do
-        local action_component = EntityGetFirstComponentIncludingDisabled(spell, "ItemActionComponent")
-        local parent = EntityGetParent(spell)
-        -- Current inner loop only exposes cards already in a player inventory
-        -- container. Cards nested inside wands are intentionally excluded.
-        if action_component ~= nil and parent ~= nil and parent ~= 0 and not EntityHasTag(parent, "wand") then
-            local action_id = ComponentGetValue2(action_component, "action_id")
-            if action_id ~= nil and action_id ~= "" then
-                table.insert(result, { entity = spell, action_id = action_id })
-            end
-        end
-    end
-
-    return result
-end
 
 function OnWorldPostUpdate()
     local player = get_player()
@@ -218,13 +193,24 @@ function OnWorldPostUpdate()
         return
     end
 
-    -- The organizer is a contextual modal: switching away from the book
-    -- immediately closes it instead of leaving an input-blocking overlay.
+    tick_pickup_cooldown()
+
+    if GameIsInventoryOpen() then
+        organizer_open = false
+    end
+
+    if active_item_is_organizer(player) then
+        try_pickup_world_spell(player, get_active_item(player))
+    end
+
+    -- The organizer is tied to the selected book. Switching to a wand or
+    -- another item must close the modal before the next frame is drawn.
     if organizer_open and not active_item_is_organizer(player) then
         organizer_open = false
         print("[NoitaInventory] organizer panel closed: organizer is no longer active")
     end
 
+    -- The organizer opens only from the active book when vanilla inventory is shut.
     if InputIsKeyJustDown(OPEN_KEY_CODE) and active_item_is_organizer(player) then
         organizer_open = not organizer_open
         print("[NoitaInventory] organizer panel " .. (organizer_open and "opened" or "closed"))
@@ -238,64 +224,22 @@ function OnWorldPostUpdate()
     end
 
     local organizer = get_active_item(player)
-    local player_spells = get_inventory_spells(player)
     local organizer_spells = get_entity_spells(organizer)
-    local player_groups = sort_groups(group_spells(player_spells))
     local organizer_groups = sort_groups(group_spells(organizer_spells))
 
     GuiStartFrame(organizer_gui)
+    GuiOptionsAdd(organizer_gui, GUI_OPTION.DrawAlwaysVisible)
+    GuiZSet(organizer_gui, -100)
     local screen_width, screen_height = GuiGetScreenDimensions(organizer_gui)
-    local panel_x = screen_width * 0.5 - 180
-    local panel_y = screen_height * 0.5 - 90
+    local modal_x = screen_width * 0.5 - PANEL_W * 0.5
+    local modal_y = screen_height * 0.5 - PANEL_H * 0.5
+    local grid_x = modal_x + 12
+    local grid_y = modal_y + 32
 
-    GuiText(organizer_gui, panel_x, panel_y, "SPELL ORGANIZER")
-    GuiText(organizer_gui, panel_x, panel_y + 15, "One card per transfer")
-    GuiText(organizer_gui, panel_x, panel_y + 38, "Inventory")
+    GuiImageNinePiece(organizer_gui, 10, modal_x, modal_y, PANEL_W, PANEL_H, 1, "data/ui_gfx/decorations/9piece0_gray.png", "data/ui_gfx/decorations/9piece0_gray.png")
+    GuiText(organizer_gui, modal_x + 10, modal_y + 8, "SPELL ORGANIZER")
+    GuiText(organizer_gui, grid_x, modal_y + 20, "Stored spells")
 
-    local inventory_row = 0
-    for index, group in ipairs(player_groups) do
-        local count = #group.entities
-        local clicked = GuiButton(organizer_gui, 1000 + index, panel_x, panel_y + 55 + inventory_row * 16, "Store " .. group.action_id .. " x" .. tostring(count))
-        if clicked then
-            local moved, reason = move_one_spell(group.entities[1], organizer)
-            if moved then
-                print("[NoitaInventory] stored one spell: " .. group.action_id)
-            else
-                GamePrint("NoitaInventory: transfer failed (" .. tostring(reason) .. ")")
-            end
-        end
-        inventory_row = inventory_row + 1
-    end
-    if inventory_row == 0 then
-        GuiText(organizer_gui, panel_x, panel_y + 55, "No spells in inventory")
-        inventory_row = 1
-    end
-
-    local storage_x = panel_x + 190
-    GuiText(organizer_gui, storage_x, panel_y + 38, "Organizer")
-    local organizer_row = 0
-    for index, group in ipairs(organizer_groups) do
-        local count = #group.entities
-        local clicked = GuiButton(organizer_gui, 2000 + index, storage_x, panel_y + 55 + organizer_row * 16, "Return " .. group.action_id .. " x" .. tostring(count))
-        if clicked then
-            local moved, reason = move_one_spell_to_inventory(group.entities[1], player)
-            if moved then
-                print("[NoitaInventory] returned one spell to inventory: " .. group.action_id)
-            else
-                GamePrint("NoitaInventory: transfer failed (" .. tostring(reason) .. ")")
-            end
-        end
-        organizer_row = organizer_row + 1
-    end
-    if organizer_row == 0 then
-        GuiText(organizer_gui, storage_x, panel_y + 55, "Empty")
-        organizer_row = 1
-    end
-
-    local close_y = panel_y + 75 + math.max(inventory_row, organizer_row) * 16
-    local close_clicked = GuiButton(organizer_gui, 1, panel_x, close_y, "Close")
-    if close_clicked then
-        organizer_open = false
-    end
+    draw_spell_grid(organizer_groups, grid_x, grid_y, 2000)
 end
 
