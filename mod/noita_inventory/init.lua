@@ -93,6 +93,23 @@ local function get_entity_spells(container)
     return result
 end
 
+local function group_spells(spells)
+    local groups = {}
+    local by_action = {}
+
+    for _, spell in ipairs(spells) do
+        local group = by_action[spell.action_id]
+        if group == nil then
+            group = { action_id = spell.action_id, entities = {} }
+            by_action[spell.action_id] = group
+            table.insert(groups, group)
+        end
+        table.insert(group.entities, spell.entity)
+    end
+
+    return groups
+end
+
 local function move_one_spell(spell, destination)
     if spell == nil or destination == nil then
         return false, "invalid_item"
@@ -148,6 +165,19 @@ local function get_inventory_spells(player)
     return result
 end
 
+local function get_wand_capacity_status(wand)
+    local ability = EntityGetFirstComponentIncludingDisabled(wand, "AbilityComponent")
+    if ability == nil then
+        return 0, 0
+    end
+    local capacity = ComponentObjectGetValue2(ability, "gun_config", "deck_capacity")
+    if type(capacity) ~= "number" then
+        return 0, 0
+    end
+    local spell_count = #get_entity_spells(wand)
+    return spell_count, capacity
+end
+
 function OnWorldPostUpdate()
     local player = get_player()
     if player == nil then
@@ -184,6 +214,12 @@ function OnWorldPostUpdate()
         wand_spells = get_entity_spells(target_wand)
     end
     local organizer_spells = get_entity_spells(organizer)
+    local wand_groups = group_spells(wand_spells)
+    local organizer_groups = group_spells(organizer_spells)
+    local wand_count, wand_capacity = 0, 0
+    if target_wand ~= nil and EntityGetIsAlive(target_wand) then
+        wand_count, wand_capacity = get_wand_capacity_status(target_wand)
+    end
 
     GuiStartFrame(organizer_gui)
     local screen_width, screen_height = GuiGetScreenDimensions(organizer_gui)
@@ -195,12 +231,17 @@ function OnWorldPostUpdate()
     GuiText(organizer_gui, panel_x, panel_y + 38, "Current wand")
 
     local row = 0
-    for index, spell in ipairs(wand_spells) do
-        local clicked = GuiButton(organizer_gui, 1000 + index, panel_x, panel_y + 55 + row * 16, "Store " .. spell.action_id)
+    for index, group in ipairs(wand_groups) do
+        local count = #group.entities
+        local label = "Store " .. group.action_id .. " x" .. tostring(count)
+        if wand_count >= wand_capacity then
+            label = label .. " (full)"
+        end
+        local clicked = GuiButton(organizer_gui, 1000 + index, panel_x, panel_y + 55 + row * 16, label)
         if clicked then
-            local moved, reason = move_one_spell(spell.entity, organizer)
+            local moved, reason = move_one_spell(group.entities[1], organizer)
             if moved then
-                print("[NoitaInventory] stored one spell: " .. spell.action_id)
+                print("[NoitaInventory] stored one spell: " .. group.action_id)
             else
                 GamePrint("NoitaInventory: transfer failed (" .. tostring(reason) .. ")")
             end
@@ -216,13 +257,14 @@ function OnWorldPostUpdate()
     local storage_x = panel_x + 190
     GuiText(organizer_gui, storage_x, panel_y + 38, "Organizer")
     local storage_row = 0
-    for index, spell in ipairs(organizer_spells) do
-        local clicked = GuiButton(organizer_gui, 2000 + index, storage_x, panel_y + 55 + storage_row * 16, "Return " .. spell.action_id)
+    for index, group in ipairs(organizer_groups) do
+        local count = #group.entities
+        local clicked = GuiButton(organizer_gui, 2000 + index, storage_x, panel_y + 55 + storage_row * 16, "Return " .. group.action_id .. " x" .. tostring(count))
         if clicked then
             if target_wand ~= nil and EntityGetIsAlive(target_wand) then
-                local moved, reason = move_one_spell(spell.entity, target_wand)
+                local moved, reason = move_one_spell(group.entities[1], target_wand)
                 if moved then
-                    print("[NoitaInventory] returned one spell: " .. spell.action_id)
+                    print("[NoitaInventory] returned one spell: " .. group.action_id)
                 else
                     GamePrint("NoitaInventory: transfer failed (" .. tostring(reason) .. ")")
                 end
