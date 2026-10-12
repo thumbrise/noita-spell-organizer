@@ -95,11 +95,31 @@ end
 
 local function move_one_spell(spell, destination)
     if spell == nil or destination == nil then
-        return false
+        return false, "invalid_item"
+    end
+
+    if EntityHasTag(destination, "wand") then
+        local capacity = EntityGetWandCapacity(destination)
+        local current_spells = get_entity_spells(destination)
+        if capacity <= 0 or #current_spells >= capacity then
+            return false, "wand_full"
+        end
+    end
+
+    local previous_parent = EntityGetParent(spell)
+    if previous_parent == nil or previous_parent == 0 then
+        return false, "item_has_no_parent"
     end
 
     EntityRemoveFromParent(spell)
     EntityAddChild(destination, spell)
+
+    if EntityGetParent(spell) ~= destination then
+        EntityRemoveFromParent(spell)
+        EntityAddChild(previous_parent, spell)
+        return false, "transfer_failed"
+    end
+
     return true
 end
 
@@ -178,8 +198,12 @@ function OnWorldPostUpdate()
     for index, spell in ipairs(wand_spells) do
         local clicked = GuiButton(organizer_gui, 1000 + index, panel_x, panel_y + 55 + row * 16, "Store " .. spell.action_id)
         if clicked then
-            move_one_spell(spell.entity, organizer)
-            print("[NoitaInventory] stored one spell: " .. spell.action_id)
+            local moved, reason = move_one_spell(spell.entity, organizer)
+            if moved then
+                print("[NoitaInventory] stored one spell: " .. spell.action_id)
+            else
+                GamePrint("NoitaInventory: transfer failed (" .. tostring(reason) .. ")")
+            end
         end
         row = row + 1
     end
@@ -196,8 +220,12 @@ function OnWorldPostUpdate()
         local clicked = GuiButton(organizer_gui, 2000 + index, storage_x, panel_y + 55 + storage_row * 16, "Return " .. spell.action_id)
         if clicked then
             if target_wand ~= nil and EntityGetIsAlive(target_wand) then
-                move_one_spell(spell.entity, target_wand)
-                print("[NoitaInventory] returned one spell: " .. spell.action_id)
+                local moved, reason = move_one_spell(spell.entity, target_wand)
+                if moved then
+                    print("[NoitaInventory] returned one spell: " .. spell.action_id)
+                else
+                    GamePrint("NoitaInventory: transfer failed (" .. tostring(reason) .. ")")
+                end
             else
                 GamePrint("NoitaInventory: target wand is unavailable")
             end
