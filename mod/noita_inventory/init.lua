@@ -15,6 +15,16 @@ local CELL_SIZE = 28
 local CELL_GAP = 3
 local PICKUP_RADIUS = 24
 
+
+local function set_card_sprite_state(spell)
+    -- These are acquired cards. The vanilla card archetype has the normal
+    -- icon enabled and the '?' fallback disabled by default. Do not infer
+    -- discovery from ItemComponent.is_identified: Noita's action discovery
+    -- state is not represented reliably by that serialized field.
+    EntitySetComponentsWithTagEnabled(spell, "item_identified", true)
+    EntitySetComponentsWithTagEnabled(spell, "item_unidentified", false)
+end
+
 local function is_world_spell_candidate(entity, player)
     if entity == nil or entity == 0 or entity == player or not EntityGetIsAlive(entity) then
         return false
@@ -106,7 +116,20 @@ local function drop_one_spell_from_organizer(spell, player)
         return false
     end
     EntitySetTransform(spell, x, y + 12)
+    -- Experimental vanilla-path probe: put the real card through the
+    -- player's inventory pickup/drop ownership path instead of assigning a
+    -- custom velocity. The actual GUI throw remains engine-owned.
+    GamePickUpInventoryItem(player, spell, false)
+    if EntityGetParent(spell) == 0 then
+        EntitySetComponentsWithTagEnabled(spell, "enabled_in_world", true)
+        set_card_sprite_state(spell)
+        return true
+    end
+    print("[NoitaInventory] vanilla drop probe: pickup path retained card")
+    EntityRemoveFromParent(spell)
+    EntitySetTransform(spell, x, y + 12)
     EntitySetComponentsWithTagEnabled(spell, "enabled_in_world", true)
+    set_card_sprite_state(spell)
     return true
 end
 
