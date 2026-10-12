@@ -57,21 +57,6 @@ local function active_item_is_organizer(player)
     return EntityGetFilename(active_item) == "mods/noita_inventory/files/entities/spell_organizer.xml"
 end
 
-local function get_quick_inventory(player)
-    local children = EntityGetAllChildren(player)
-    if children == nil then
-        return nil
-    end
-
-    for _, child in ipairs(children) do
-        if EntityGetName(child) == "inventory_quick" then
-            return child
-        end
-    end
-
-    return nil
-end
-
 local function get_entity_spells(container)
     local result = {}
     local children = EntityGetAllChildren(container)
@@ -146,19 +131,19 @@ local function move_one_spell(spell, destination)
     return true
 end
 
-local function inventory_contains_item(player, item)
-    local items = GameGetAllInventoryItems(player)
-    if items == nil then
-        return false
+local function get_player_inventory_container(player, container_name)
+    local children = EntityGetAllChildren(player)
+    if children == nil then
+        return nil
     end
 
-    for _, inventory_item in ipairs(items) do
-        if inventory_item == item then
-            return true
+    for _, child in ipairs(children) do
+        if EntityGetName(child) == container_name then
+            return child
         end
     end
 
-    return false
+    return nil
 end
 
 local function move_one_spell_to_inventory(spell, player)
@@ -166,17 +151,42 @@ local function move_one_spell_to_inventory(spell, player)
         return false, "invalid_item"
     end
 
-    -- Use Noita's own pickup flow. It owns slot assignment and naturally
-    -- rejects items if the inventory has no room.
-    local x, y = EntityGetTransform(player)
-    EntitySetTransform(spell, x, y)
-    GamePickUpInventoryItem(player, spell, false)
-
-    if inventory_contains_item(player, spell) then
-        return true
+    local full_inventory = get_player_inventory_container(player, "inventory_full")
+    if full_inventory == nil then
+        return false, "inventory_unavailable"
     end
 
-    return false, "inventory_full"
+    local inventory2 = EntityGetFirstComponentIncludingDisabled(player, "Inventory2Component")
+    if inventory2 == nil then
+        return false, "inventory_unavailable"
+    end
+
+    local slots_x = ComponentGetValue2(inventory2, "full_inventory_slots_x") or 0
+    local slots_y = ComponentGetValue2(inventory2, "full_inventory_slots_y") or 0
+    local capacity = slots_x * slots_y
+    local items = EntityGetAllChildren(full_inventory) or {}
+    if capacity <= 0 or #items >= capacity then
+        return false, "inventory_full"
+    end
+
+    local previous_parent = EntityGetParent(spell)
+    if previous_parent == nil or previous_parent == 0 then
+        return false, "item_has_no_parent"
+    end
+
+    -- Place the exact spell entity into Noita's dedicated full-inventory
+    -- container. GameGetAllInventoryItems counts quick slots too, so it is not
+    -- used as the free-space check for this destination.
+    EntityRemoveFromParent(spell)
+    EntityAddChild(full_inventory, spell)
+
+    if EntityGetParent(spell) ~= full_inventory then
+        EntityRemoveFromParent(spell)
+        EntityAddChild(previous_parent, spell)
+        return false, "transfer_failed"
+    end
+
+    return true
 end
 
 local function get_inventory_spells(player)

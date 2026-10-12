@@ -7,9 +7,9 @@
 - Органайзер корректно видит только spell-карты, находящиеся в обычном инвентаре.
 - Spell-карты внутри посохов больше не показываются — это правильное поведение для текущего inner loop.
 - Перенос `Inventory → Organizer` работает.
-- Перенос `Organizer → Inventory` не работает даже при визуально пустом обычном инвентаре.
-- Игра/мод всегда показывают сообщение, эквивалентное `inventory_full`.
-- Последняя попытка изменить способ проверки результата не дала наблюдаемого улучшения.
+- User-confirmed diagnostic: `inventory_quick` child count = 5; `inventory_full` child count = 1; `GameGetAllInventoryItems` count = 6. Quick contains two wands, potion, organizer and one other quick item; full holds one RUBBER_BALL card. Thus overall count 6 is not evidence that full inventory is full.
+- Return attempt left the card unchanged under the Organizer (`parent` unchanged) and did not add it to `inventory_full`.
+- Transfer implementation now targets the named `inventory_full` entity directly, checks its child count against `full_inventory_slots_x * full_inventory_slots_y`, and rolls back to the Organizer if the parent change fails. This implementation is **not yet user-tested**.
 
 ### Текущий упрощённый контракт
 
@@ -64,17 +64,10 @@ return false, "inventory_full"
 Последний опубликованный commit:
 
 ```text
-920f580 feat: group organizer spells with counts
+8525592 docs: capture inventory return blocker and current flow
 ```
 
-Локально есть непушенные изменения после него:
-
-- фильтрация spell-карт только из обычного инвентаря;
-- упрощение UI без `target_wand`;
-- возврат через `GamePickUpInventoryItem`;
-- дизайн-документ с описанием нового inner loop.
-
-Перед продолжением проверить `git status`, затем сохранить эти изменения отдельным commit и push. Не переписывать опубликованную историю.
+Локальная ветка чистая и синхронизирована с `origin/main`.
 
 ## Что уже проверено пользователем
 
@@ -91,20 +84,18 @@ return false, "inventory_full"
 
 ## Следующее расследование
 
-Не продолжать угадывать по `EntityGetParent` или простому `inventory_full`. Нужен диагностический эксперимент, который после `GamePickUpInventoryItem` печатает:
+Добавлен временный диагностический режим для одной операции `Return`. Первый тест прошёл, но `logger.txt` содержит только стандартные строки запуска — никаких `RETURN_DIAG` там нет. Поэтому `print()` из Lua не является сейчас надёжным каналом наблюдения.
 
-- entity ID spell;
-- `EntityGetFilename(spell)`;
-- parent до операции;
-- parent сразу после операции;
-- parent через следующий `OnWorldPostUpdate`;
-- результат `GameGetAllInventoryItems(player)` и полный список entity ID;
-- `EntityGetTags(spell)`;
-- состояние `ItemComponent` и `InventoryItemComponent`, если компонент существует;
-- позицию spell до/после;
-- жив ли spell после операции.
+Диагностика теперь показывается прямо в окне органайзера отдельными короткими строками (GamePrint оказался мелким/слишком многословным на экране):
 
-Проверить также, действительно ли `GameGetAllInventoryItems(player)` включает обычные spell-карты, или возвращает только верхнеуровневые inventory objects/wands.
+- `Spell before/after`: ID, parent ID, alive, action_id, filename;
+- `Inv before/after`: количество и первые 8 ID/name;
+- `Result`: успех либо `pickup not in inventory`.
+
+На скриншоте видно `GameGetAllInventoryItems(player) count=4`, хотя пользователь сообщает, что обычный full inventory пуст, а четыре предмета находятся в quick slots (два посоха, бутылка, органайзер). В `player.xml` действительно два отдельных контейнера: `inventory_quick` и `inventory_full`; `Inventory2Component` задаёт quick slots отдельно от full grid. Поэтому вероятно, что общий счётчик/API не отражает свободные слоты full inventory.
+
+Новая диагностическая версия отдельно перечисляет children и count для `inventory_quick` и `inventory_full` до/после Return, сохраняя общий `GameGetAllInventoryItems` для сравнения. Не менять transfer destination, пока значения не увидены в игре.
+
 
 ## Гипотезы для проверки
 
