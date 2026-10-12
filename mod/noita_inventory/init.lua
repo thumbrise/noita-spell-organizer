@@ -5,6 +5,7 @@ local OPEN_KEY_CODE = 5 -- SDL keycode for B, see data/scripts/debug/keycodes.lu
 local ESCAPE_KEY_CODE = 41
 local organizer_gui = GuiCreate()
 local organizer_open = false
+local target_wand = nil
 
 function OnModInit()
     print("[NoitaInventory] loaded")
@@ -37,17 +38,23 @@ local function get_player()
     return players[1]
 end
 
-local function active_item_is_organizer(player)
+local function get_active_item(player)
     local inventory = EntityGetFirstComponentIncludingDisabled(player, "Inventory2Component")
     if inventory == nil then
-        return false
+        return nil
     end
-
     local active_item = ComponentGetValue2(inventory, "mActiveItem")
     if active_item == nil or active_item == 0 then
+        return nil
+    end
+    return active_item
+end
+
+local function active_item_is_organizer(player)
+    local active_item = get_active_item(player)
+    if active_item == nil then
         return false
     end
-
     return EntityGetFilename(active_item) == "mods/noita_inventory/files/entities/spell_organizer.xml"
 end
 
@@ -66,6 +73,36 @@ local function get_quick_inventory(player)
     return nil
 end
 
+local function get_entity_spells(container)
+    local result = {}
+    local children = EntityGetAllChildren(container)
+    if children == nil then
+        return result
+    end
+
+    for _, spell in ipairs(children) do
+        local action_component = EntityGetFirstComponentIncludingDisabled(spell, "ItemActionComponent")
+        if action_component ~= nil then
+            local action_id = ComponentGetValue2(action_component, "action_id")
+            if action_id ~= nil and action_id ~= "" then
+                table.insert(result, { entity = spell, action_id = action_id })
+            end
+        end
+    end
+
+    return result
+end
+
+local function move_one_spell(spell, destination)
+    if spell == nil or destination == nil then
+        return false
+    end
+
+    EntityRemoveFromParent(spell)
+    EntityAddChild(destination, spell)
+    return true
+end
+
 local function get_inventory_spells(player)
     local result = {}
     local quick_inventory = get_quick_inventory(player)
@@ -79,20 +116,11 @@ local function get_inventory_spells(player)
     end
 
     -- Noita stores spell cards as children of wand entities, not as direct
-    -- children of inventory_quick. This is read-only for the prototype.
+    -- children of inventory_quick. This remains read-only until a transfer is clicked.
     for _, wand in ipairs(wands) do
         if EntityHasTag(wand, "wand") then
-            local spells = EntityGetAllChildren(wand)
-            if spells ~= nil then
-                for _, spell in ipairs(spells) do
-                    local action_component = EntityGetFirstComponentIncludingDisabled(spell, "ItemActionComponent")
-                    if action_component ~= nil then
-                        local action_id = ComponentGetValue2(action_component, "action_id")
-                        if action_id ~= nil and action_id ~= "" then
-                            result[action_id] = (result[action_id] or 0) + 1
-                        end
-                    end
-                end
+            for _, spell in ipairs(get_entity_spells(wand)) do
+                result[spell.action_id] = (result[spell.action_id] or 0) + 1
             end
         end
     end
@@ -104,6 +132,11 @@ function OnWorldPostUpdate()
     local player = get_player()
     if player == nil then
         return
+    end
+
+    local current_item = get_active_item(player)
+    if not organizer_open and current_item ~= nil and EntityHasTag(current_item, "wand") then
+        target_wand = current_item
     end
 
     -- The organizer is a contextual modal: switching away from the book
@@ -125,26 +158,60 @@ function OnWorldPostUpdate()
         return
     end
 
-    local spell_counts = get_inventory_spells(player)
+    local organizer = get_active_item(player)
+    local wand_spells = {}
+    if target_wand ~= nil and EntityGetIsAlive(target_wand) then
+        wand_spells = get_entity_spells(target_wand)
+    end
+    local organizer_spells = get_entity_spells(organizer)
+
     GuiStartFrame(organizer_gui)
     local screen_width, screen_height = GuiGetScreenDimensions(organizer_gui)
-    local panel_x = screen_width * 0.5 - 100
-    local panel_y = screen_height * 0.5 - 55
+    local panel_x = screen_width * 0.5 - 180
+    local panel_y = screen_height * 0.5 - 90
 
     GuiText(organizer_gui, panel_x, panel_y, "SPELL ORGANIZER")
-    GuiText(organizer_gui, panel_x, panel_y + 15, "Wand spells (read-only prototype)")
+    GuiText(organizer_gui, panel_x, panel_y + 15, "One card per transfer")
+    GuiText(organizer_gui, panel_x, panel_y + 38, "Current wand")
 
     local row = 0
-    for action_id, count in pairs(spell_counts) do
-        GuiText(organizer_gui, panel_x, panel_y + 35 + row * 14, action_id .. " x" .. tostring(count))
+    for index, spell in ipairs(wand_spells) do
+        local clicked = GuiButton(organizer_gui, 1000 + index, panel_x, panel_y + 55 + row * 16, "Store " .. spell.action_id)
+        if clicked then
+            move_one_spell(spell.entity, organizer)
+            print("[NoitaInventory] stored one spell: " .. spell.action_id)
+        end
         row = row + 1
     end
 
     if row == 0 then
-        GuiText(organizer_gui, panel_x, panel_y + 35, "No spell cards in quick inventory")
+        GuiText(organizer_gui, panel_x, panel_y + 55, "No cards in target wand")
+        row = 1
     end
 
-    local close_clicked = GuiButton(organizer_gui, 1, panel_x, panel_y + 55 + row * 14, "Close")
+    local storage_x = panel_x + 190
+    GuiText(organizer_gui, storage_x, panel_y + 38, "Organizer")
+    local storage_row = 0
+    for index, spell in ipairs(organizer_spells) do
+        local clicked = GuiButton(organizer_gui, 2000 + index, storage_x, panel_y + 55 + storage_row * 16, "Return " .. spell.action_id)
+        if clicked then
+            if target_wand ~= nil and EntityGetIsAlive(target_wand) then
+                move_one_spell(spell.entity, target_wand)
+                print("[NoitaInventory] returned one spell: " .. spell.action_id)
+            else
+                GamePrint("NoitaInventory: target wand is unavailable")
+            end
+        end
+        storage_row = storage_row + 1
+    end
+
+    if storage_row == 0 then
+        GuiText(organizer_gui, storage_x, panel_y + 55, "Empty")
+        storage_row = 1
+    end
+
+    local close_y = panel_y + 75 + math.max(row, storage_row) * 16
+    local close_clicked = GuiButton(organizer_gui, 1, panel_x, close_y, "Close")
     if close_clicked then
         organizer_open = false
     end
