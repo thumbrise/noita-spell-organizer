@@ -1,5 +1,8 @@
 <Entity>
     <Base file="data/entities/items/books/base_book.xml">
+        <!-- The inherited book throws on LMB; disable that behavior while
+             we investigate a supported item-use callback for opening UI. -->
+        <AbilityComponent throw_as_item="0" click_to_use="0" />
     </Base>
 
     <ItemComponent
