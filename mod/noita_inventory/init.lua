@@ -110,6 +110,13 @@ local function group_spells(spells)
     return groups
 end
 
+local function sort_groups(groups)
+    table.sort(groups, function(left, right)
+        return left.action_id < right.action_id
+    end)
+    return groups
+end
+
 local function move_one_spell(spell, destination)
     if spell == nil or destination == nil then
         return false, "invalid_item"
@@ -214,8 +221,8 @@ function OnWorldPostUpdate()
         wand_spells = get_entity_spells(target_wand)
     end
     local organizer_spells = get_entity_spells(organizer)
-    local wand_groups = group_spells(wand_spells)
-    local organizer_groups = group_spells(organizer_spells)
+    local wand_groups = sort_groups(group_spells(wand_spells))
+    local organizer_groups = sort_groups(group_spells(organizer_spells))
     local wand_count, wand_capacity = 0, 0
     if target_wand ~= nil and EntityGetIsAlive(target_wand) then
         wand_count, wand_capacity = get_wand_capacity_status(target_wand)
@@ -228,7 +235,7 @@ function OnWorldPostUpdate()
 
     GuiText(organizer_gui, panel_x, panel_y, "SPELL ORGANIZER")
     GuiText(organizer_gui, panel_x, panel_y + 15, "One card per transfer")
-    GuiText(organizer_gui, panel_x, panel_y + 38, "Current wand")
+    GuiText(organizer_gui, panel_x, panel_y + 38, "Current wand " .. tostring(wand_count) .. "/" .. tostring(wand_capacity))
 
     local row = 0
     for index, group in ipairs(wand_groups) do
