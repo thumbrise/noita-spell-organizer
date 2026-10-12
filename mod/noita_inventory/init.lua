@@ -1,10 +1,12 @@
 dofile_once("data/scripts/lib/utilities.lua")
 
--- Prototype controls: B opens/closes the organizer while it is selected;
--- Escape closes the panel. This milestone only proves GUI lifecycle.
-local ORGANIZER_GIVEN_KEY = "NOITAINVENTORY_ORGANIZER_GIVEN"
-local OPEN_KEY_CODE = 5 -- SDL keycode for B, see data/scripts/debug/keycodes.lua
+-- Press O (configurable in mod settings) to open the player-bound organizer.
+local STORAGE_NAME = "noita_inventory_storage"
+local OPEN_SETTING_ID = "noita_inventory.open_key"
 local ESCAPE_KEY_CODE = 41
+local open_key_label = nil
+local open_key_code = 18 -- O; see data/scripts/debug/keycodes.lua
+
 local organizer_gui = GuiCreate()
 local organizer_open = false
 local PANEL_W = 108
@@ -108,27 +110,59 @@ local function drop_one_spell_from_organizer(spell, player)
     return true
 end
 
+local function get_storage(player)
+    for _, child in ipairs(EntityGetAllChildren(player) or {}) do
+        if EntityGetName(child) == STORAGE_NAME then
+            return child
+        end
+    end
+    local storage = EntityCreateNew(STORAGE_NAME)
+    if storage == nil or storage == 0 then
+        return nil
+    end
+    EntityAddChild(player, storage)
+    if EntityGetParent(storage) ~= player then
+        EntityKill(storage)
+        return nil
+    end
+    return storage
+end
+
+local function migrate_legacy_book(player, storage)
+    for _, inventory in ipairs(EntityGetAllChildren(player) or {}) do
+        if EntityGetName(inventory) == "inventory_quick" then
+            for _, item in ipairs(EntityGetAllChildren(inventory) or {}) do
+                if EntityGetFilename(item) == "mods/noita_inventory/files/entities/spell_organizer.xml" then
+                    local failed = false
+                    for _, card in ipairs(EntityGetAllChildren(item) or {}) do
+                        EntityRemoveFromParent(card)
+                        EntityAddChild(storage, card)
+                        if EntityGetParent(card) ~= storage then
+                            EntityRemoveFromParent(card)
+                            EntityAddChild(item, card)
+                            failed = true
+                            print("[NoitaInventory] migration failed for card: " .. tostring(card))
+                        end
+                    end
+                    if not failed and #(EntityGetAllChildren(item) or {}) == 0 then
+                        EntityKill(item)
+                        print("[NoitaInventory] migrated legacy organizer")
+                    end
+                end
+            end
+        end
+    end
+end
+
 function OnModInit()
     print("[NoitaInventory] loaded")
 end
 
 function OnPlayerSpawned(player_entity)
-    if GameHasFlagRun(ORGANIZER_GIVEN_KEY) then
-        return
+    local storage = get_storage(player_entity)
+    if storage ~= nil then
+        migrate_legacy_book(player_entity, storage)
     end
-
-    local x, y = EntityGetTransform(player_entity)
-    local organizer = EntityLoad("mods/noita_inventory/files/entities/spell_organizer.xml", x, y)
-
-    if organizer == nil or organizer == 0 then
-        print("[NoitaInventory] failed to create Spell Organizer")
-        return
-    end
-
-    GamePickUpInventoryItem(player_entity, organizer, false)
-    GameAddFlagRun(ORGANIZER_GIVEN_KEY)
-    GamePrint("NoitaInventory: Spell Organizer added")
-    print("[NoitaInventory] organizer given: " .. tostring(organizer))
 end
 
 local function get_player()
@@ -139,24 +173,16 @@ local function get_player()
     return players[1]
 end
 
-local function get_active_item(player)
-    local inventory = EntityGetFirstComponentIncludingDisabled(player, "Inventory2Component")
-    if inventory == nil then
-        return nil
+local function get_open_key_code()
+    local label = ModSettingGet(OPEN_SETTING_ID)
+    if type(label) ~= "string" or not string.match(label, "^[A-Z]$") then
+        label = "O"
     end
-    local active_item = ComponentGetValue2(inventory, "mActiveItem")
-    if active_item == nil or active_item == 0 then
-        return nil
+    if label ~= open_key_label then
+        open_key_label = label
+        open_key_code = string.byte(label) - string.byte("A") + 4
     end
-    return active_item
-end
-
-local function active_item_is_organizer(player)
-    local active_item = get_active_item(player)
-    if active_item == nil then
-        return false
-    end
-    return EntityGetFilename(active_item) == "mods/noita_inventory/files/entities/spell_organizer.xml"
+    return open_key_code
 end
 
 local function get_entity_spells(container)
@@ -246,20 +272,18 @@ function OnWorldPostUpdate()
         return
     end
 
+    local storage = get_storage(player)
+    if storage == nil then
+        organizer_open = false
+        return
+    end
+    migrate_legacy_book(player, storage)
+
     if GameIsInventoryOpen() then
         organizer_open = false
     end
 
-    -- The organizer is tied to the selected book. Switching to a wand or
-    -- another item must close the modal before the next frame is drawn.
-
-    if organizer_open and not active_item_is_organizer(player) then
-        organizer_open = false
-        print("[NoitaInventory] organizer panel closed: organizer is no longer active")
-    end
-
-    -- The organizer opens only from the active book when vanilla inventory is shut.
-    if InputIsKeyJustDown(OPEN_KEY_CODE) and active_item_is_organizer(player) then
+    if InputIsKeyJustDown(get_open_key_code()) and not GameIsInventoryOpen() then
         organizer_open = not organizer_open
         print("[NoitaInventory] organizer panel " .. (organizer_open and "opened" or "closed"))
     elseif InputIsKeyJustDown(ESCAPE_KEY_CODE) and organizer_open then
@@ -271,8 +295,7 @@ function OnWorldPostUpdate()
         return
     end
 
-    local organizer = get_active_item(player)
-    local organizer_spells = get_entity_spells(organizer)
+    local organizer_spells = get_entity_spells(storage)
     local organizer_groups = sort_groups(group_spells(organizer_spells))
 
     GuiStartFrame(organizer_gui)
@@ -292,7 +315,7 @@ function OnWorldPostUpdate()
     handle_organizer_clicks(organizer_cells, player)
     GuiOptionsAddForNextWidget(organizer_gui, GUI_OPTION.DrawNoHoverAnimation)
     if GuiButton(organizer_gui, 9137999, modal_x + 10, modal_y + PANEL_H - 22, "Absorb all") then
-        local count = absorb_available_spells(player, organizer)
+        local count = absorb_available_spells(player, storage)
         GamePrint("Spell Organizer: absorbed " .. tostring(count))
     end
 end
