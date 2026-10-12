@@ -29,13 +29,16 @@ function OnPlayerSpawned(player_entity)
     print("[NoitaInventory] organizer given: " .. tostring(organizer))
 end
 
-local function active_item_is_organizer()
+local function get_player()
     local players = EntityGetWithTag("player_unit")
     if players == nil or #players == 0 then
-        return false
+        return nil
     end
+    return players[1]
+end
 
-    local inventory = EntityGetFirstComponentIncludingDisabled(players[1], "Inventory2Component")
+local function active_item_is_organizer(player)
+    local inventory = EntityGetFirstComponentIncludingDisabled(player, "Inventory2Component")
     if inventory == nil then
         return false
     end
@@ -48,8 +51,69 @@ local function active_item_is_organizer()
     return EntityGetFilename(active_item) == "mods/noita_inventory/files/entities/spell_organizer.xml"
 end
 
+local function get_quick_inventory(player)
+    local children = EntityGetAllChildren(player)
+    if children == nil then
+        return nil
+    end
+
+    for _, child in ipairs(children) do
+        if EntityGetName(child) == "inventory_quick" then
+            return child
+        end
+    end
+
+    return nil
+end
+
+local function get_inventory_spells(player)
+    local result = {}
+    local quick_inventory = get_quick_inventory(player)
+    if quick_inventory == nil then
+        return result
+    end
+
+    local wands = EntityGetAllChildren(quick_inventory)
+    if wands == nil then
+        return result
+    end
+
+    -- Noita stores spell cards as children of wand entities, not as direct
+    -- children of inventory_quick. This is read-only for the prototype.
+    for _, wand in ipairs(wands) do
+        if EntityHasTag(wand, "wand") then
+            local spells = EntityGetAllChildren(wand)
+            if spells ~= nil then
+                for _, spell in ipairs(spells) do
+                    local action_component = EntityGetFirstComponentIncludingDisabled(spell, "ItemActionComponent")
+                    if action_component ~= nil then
+                        local action_id = ComponentGetValue2(action_component, "action_id")
+                        if action_id ~= nil and action_id ~= "" then
+                            result[action_id] = (result[action_id] or 0) + 1
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return result
+end
+
 function OnWorldPostUpdate()
-    if InputIsKeyJustDown(OPEN_KEY_CODE) and active_item_is_organizer() then
+    local player = get_player()
+    if player == nil then
+        return
+    end
+
+    -- The organizer is a contextual modal: switching away from the book
+    -- immediately closes it instead of leaving an input-blocking overlay.
+    if organizer_open and not active_item_is_organizer(player) then
+        organizer_open = false
+        print("[NoitaInventory] organizer panel closed: organizer is no longer active")
+    end
+
+    if InputIsKeyJustDown(OPEN_KEY_CODE) and active_item_is_organizer(player) then
         organizer_open = not organizer_open
         print("[NoitaInventory] organizer panel " .. (organizer_open and "opened" or "closed"))
     elseif InputIsKeyJustDown(ESCAPE_KEY_CODE) and organizer_open then
@@ -61,14 +125,26 @@ function OnWorldPostUpdate()
         return
     end
 
+    local spell_counts = get_inventory_spells(player)
     GuiStartFrame(organizer_gui)
     local screen_width, screen_height = GuiGetScreenDimensions(organizer_gui)
     local panel_x = screen_width * 0.5 - 100
-    local panel_y = screen_height * 0.5 - 30
+    local panel_y = screen_height * 0.5 - 55
 
     GuiText(organizer_gui, panel_x, panel_y, "SPELL ORGANIZER")
-    GuiText(organizer_gui, panel_x, panel_y + 15, "Prototype: empty storage")
-    local close_clicked = GuiButton(organizer_gui, 1, panel_x, panel_y + 35, "Close")
+    GuiText(organizer_gui, panel_x, panel_y + 15, "Wand spells (read-only prototype)")
+
+    local row = 0
+    for action_id, count in pairs(spell_counts) do
+        GuiText(organizer_gui, panel_x, panel_y + 35 + row * 14, action_id .. " x" .. tostring(count))
+        row = row + 1
+    end
+
+    if row == 0 then
+        GuiText(organizer_gui, panel_x, panel_y + 35, "No spell cards in quick inventory")
+    end
+
+    local close_clicked = GuiButton(organizer_gui, 1, panel_x, panel_y + 55 + row * 14, "Close")
     if close_clicked then
         organizer_open = false
     end
