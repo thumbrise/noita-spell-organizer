@@ -3,28 +3,24 @@ dofile_once("data/scripts/gun/gun_enums.lua")
 
 local BRAND_NAME = "Spell Organizer"
 
--- Press O (configurable in mod settings) to open the player-bound organizer.
+-- Organizer is visible only alongside vanilla inventory.
 local STORAGE_NAME = "spell_organizer_storage"
-local OPEN_SETTING_ID = "spell_organizer.open_key"
-local ESCAPE_KEY_CODE = 41
-local open_key_label = nil
-local open_key_code = 18 -- O; see data/scripts/debug/keycodes.lua
 
 local organizer_gui = GuiCreate()
 local organizer_open = false
 local inventory_was_open = false
-local PANEL_W = 198
-local PANEL_H = 198
+local PANEL_W = 154
+local PANEL_H = 154
 local GRID_W = PANEL_W - 20
-local GRID_H = 112
+local GRID_H = 80
 local GRID_COLUMNS = 6
-local CELL_W = 28
-local CELL_H = 27
+local CELL_W = 20
+local CELL_H = 22
 local CELL_GAP = 1
 
 local SEARCH_X_OFFSET = 8
 local SEARCH_Y_OFFSET = 8
-local SEARCH_W = 104
+local SEARCH_W = 78
 local SEARCH_H = 14
 local PICKUP_RADIUS = 24
 local stored_search = ""
@@ -377,18 +373,6 @@ local function get_player()
     return players[1]
 end
 
-local function get_open_key_code()
-    local label = ModSettingGet(OPEN_SETTING_ID)
-    if type(label) ~= "string" or not string.match(label, "^[A-Z]$") then
-        label = "O"
-    end
-    if label ~= open_key_label then
-        open_key_label = label
-        open_key_code = string.byte(label) - string.byte("A") + 4
-    end
-    return open_key_code
-end
-
 local function get_entity_spells(container)
     local result = {}
     local children = EntityGetAllChildren(container)
@@ -456,6 +440,12 @@ local TYPE_BACKGROUNDS = {
     [ACTION_TYPE_PASSIVE] = "passive",
 }
 
+local function action_background(action_type)
+    return "data/ui_gfx/inventory/item_bg_" .. (TYPE_BACKGROUNDS[action_type] or "other") .. ".png"
+end
+
+local FILTER_STEP = 15
+
 local function draw_type_filters(x, y)
     local filters = { { "All", "All stored spells", nil } }
     for _, entry in ipairs(ACTION_TYPES) do
@@ -469,10 +459,10 @@ local function draw_type_filters(x, y)
             or ("mods/spell_organizer/files/gui/buttons/type_filter_" .. tostring(i - 2) .. ".png")
         if active then
             GuiZSetForNextWidget(organizer_gui, 1)
-            GuiImage(organizer_gui, 9137450 + i, x + (i - 1) * 19, y, "mods/spell_lab_shugged/files/gui/buttons/spell_box_active.png", 1, 1, 0)
+            GuiImage(organizer_gui, 9137450 + i, x + (i - 1) * FILTER_STEP, y, "mods/spell_organizer/files/gui/buttons/spell_box_0_active.png", 1, 0.8, 0)
         end
         GuiColorSetForNextWidget(organizer_gui, active and 1 or 0.72, active and 1 or 0.72, active and 0.5 or 0.72, 1)
-        if GuiImageButton(organizer_gui, 9137400 + i, x + (i - 1) * 19, y, "", icon) then
+        if GuiImageButton(organizer_gui, 9137400 + i, x + (i - 1) * FILTER_STEP, y, "", icon) then
             selected_type = type_value
         end
         GuiTooltip(organizer_gui, GameTextGetTranslatedOrNot(entry[2]), active and "Selected" or "")
@@ -489,14 +479,9 @@ local function draw_spell_grid(groups, x, y)
         local cell_y = row * CELL_H + 2
         local action = get_action_metadata(group.action_id)
         local sprite = (action and action.sprite) or action_sprite(group.action_id)
-        local background = TYPE_BACKGROUNDS[action and action.type]
-        -- Keep the first port intentionally minimal: Spell Lab action sprite
-        -- plus our live count. Reintroduce decorative spell frames only after
-        -- the icon render path is confirmed in-game.
         local clicked = GuiImageButton(organizer_gui, 9137000 + index, cell_x, cell_y, "", sprite)
         GuiTooltip(organizer_gui, spell_display_name(group.action_id) .. " x" .. tostring(#group.entities), group.action_id)
-        GuiZSetForNextWidget(organizer_gui, -1)
-        GuiText(organizer_gui, cell_x + 17, cell_y + 15, tostring(#group.entities))
+        GuiText(organizer_gui, cell_x + 13, cell_y + 12, tostring(#group.entities), 0.7)
         cells[#cells + 1] = { group = group, clicked = clicked }
     end
     if #groups == 0 then GuiText(organizer_gui, 2, 2, "No stored spells match") end
@@ -525,13 +510,13 @@ local function mouse_inside_rect(x, y, width, height)
 end
 
 function OnWorldPreUpdate()
-    if not organizer_open and not GameIsInventoryOpen() then return end
+    if not GameIsInventoryOpen() then return end
     local player = get_player()
     if player == nil then return end
     local width, height = GuiGetScreenDimensions(organizer_gui)
     local inventory_open = GameIsInventoryOpen()
-    local x = inventory_open and (width - PANEL_W - 6) or (width - PANEL_W) / 2
-    local y = inventory_open and (height - PANEL_H - 6) or (height - PANEL_H) / 2
+    local x = width - PANEL_W - 6
+    local y = height - PANEL_H - 6
     if mouse_inside_rect(x, y, PANEL_W, PANEL_H) then
         clear_gameplay_mouse_input(player)
     end
@@ -549,6 +534,7 @@ local function handle_organizer_clicks(cells, player)
 end
 
 function OnWorldPostUpdate()
+    GuiStartFrame(organizer_gui)
     local player = get_player()
     if player == nil then
         return
@@ -562,33 +548,17 @@ function OnWorldPostUpdate()
     migrate_legacy_book(player, storage)
 
     local inventory_open = GameIsInventoryOpen()
-    if inventory_open and not inventory_was_open then
-        organizer_open = true
-        set_search_focus(false)
-    elseif not inventory_open and inventory_was_open then
-        organizer_open = false
+    if inventory_open ~= inventory_was_open then
         set_search_focus(false)
     end
     inventory_was_open = inventory_open
+    organizer_open = inventory_open
 
-    if not inventory_open and InputIsKeyJustDown(get_open_key_code()) and not search_input_is_active() then
-        organizer_open = not organizer_open
-        if not organizer_open then
-            set_search_focus(false)
-        end
-        print("[SpellOrganizer] panel " .. (organizer_open and "opened" or "closed"))
-    elseif not inventory_open and InputIsKeyJustDown(ESCAPE_KEY_CODE) and organizer_open then
-        organizer_open = false
-        set_search_focus(false)
-        print("[SpellOrganizer] panel closed")
-    end
-
-    if not organizer_open and not inventory_open then
+    if not organizer_open then
         set_search_focus(false)
         return
     end
 
-    GuiStartFrame(organizer_gui)
     GuiIdPushString(organizer_gui, "SPELL_ORGANIZER_GUI")
     GuiOptionsAdd(organizer_gui, GUI_OPTION.DrawAlwaysVisible)
     GuiOptionsAdd(organizer_gui, GUI_OPTION.NoPositionTween)
@@ -596,8 +566,8 @@ function OnWorldPostUpdate()
     GuiOptionsAdd(organizer_gui, GUI_OPTION.ClickCancelsDoubleClick)
     GuiZSet(organizer_gui, -1000)
     local screen_width, screen_height = GuiGetScreenDimensions(organizer_gui)
-    local modal_x = inventory_open and (screen_width - PANEL_W - 6) or (screen_width * 0.5 - PANEL_W * 0.5)
-    local modal_y = inventory_open and (screen_height - PANEL_H - 6) or (screen_height * 0.5 - PANEL_H * 0.5)
+    local modal_x = screen_width - PANEL_W - 6
+    local modal_y = screen_height - PANEL_H - 6
     local grid_x = modal_x + 10
     local grid_y = modal_y + 54
     if organizer_open and mouse_inside_rect(modal_x, modal_y, PANEL_W, PANEL_H) then
