@@ -3,33 +3,30 @@ dofile_once("data/scripts/gun/gun_enums.lua")
 
 local BRAND_NAME = "Spell Organizer"
 
--- Press O (configurable in mod settings) to open the player-bound organizer.
+-- Q opens the player-bound organizer; vanilla inventory I is exclusive.
 local STORAGE_NAME = "spell_organizer_storage"
 local OPEN_SETTING_ID = "spell_organizer.open_key"
 local ESCAPE_KEY_CODE = 41
-local open_key_label = nil
-local open_key_code = 18 -- O; see data/scripts/debug/keycodes.lua
+local ENABLE_Q_OPEN = false -- retained fallback; companion mode is the current UX
 
 local organizer_gui = GuiCreate()
 local organizer_open = false
 local inventory_was_open = false
-local PANEL_W = 198
-local PANEL_H = 198
+local PANEL_W = 174
+local PANEL_H = 154
 local GRID_W = PANEL_W - 20
-local GRID_H = 112
+local GRID_H = 80
 local GRID_COLUMNS = 6
-local CELL_W = 28
-local CELL_H = 27
-local CELL_GAP = 1
 
 local SEARCH_X_OFFSET = 8
 local SEARCH_Y_OFFSET = 8
-local SEARCH_W = 104
+local SEARCH_W = 78
 local SEARCH_H = 14
 local PICKUP_RADIUS = 24
 local stored_search = ""
 local SEARCH_INPUT_ACTIVE = false
 local SEARCH_INPUT_ID = 9137200
+local CUSTOM_SPELL_TOOLTIP_ENABLED = true -- same-Gui, post-grid tooltip pass
 
 local function freeze_player_controls()
     for _, player in ipairs(EntityGetWithTag("player_unit") or {}) do
@@ -359,7 +356,7 @@ local function migrate_legacy_book(player, storage)
 end
 
 function OnModInit()
-    print("[SpellOrganizer] loaded")
+    print("[SpellOrganizer] loaded; Q opens organizer")
 end
 
 function OnPlayerSpawned(player_entity)
@@ -378,15 +375,7 @@ local function get_player()
 end
 
 local function get_open_key_code()
-    local label = ModSettingGet(OPEN_SETTING_ID)
-    if type(label) ~= "string" or not string.match(label, "^[A-Z]$") then
-        label = "O"
-    end
-    if label ~= open_key_label then
-        open_key_label = label
-        open_key_code = string.byte(label) - string.byte("A") + 4
-    end
-    return open_key_code
+    return 20 -- Key_q from data/scripts/debug/keycodes.lua
 end
 
 local function get_entity_spells(container)
@@ -444,17 +433,18 @@ local function action_group_can_return(group, player)
 end
 
 
-
-local TYPE_BACKGROUNDS = {
-    [ACTION_TYPE_PROJECTILE] = "projectile",
-    [ACTION_TYPE_STATIC_PROJECTILE] = "static_projectile",
-    [ACTION_TYPE_MODIFIER] = "modifier",
-    [ACTION_TYPE_DRAW_MANY] = "draw_many",
-    [ACTION_TYPE_MATERIAL] = "material",
-    [ACTION_TYPE_OTHER] = "other",
-    [ACTION_TYPE_UTILITY] = "utility",
-    [ACTION_TYPE_PASSIVE] = "passive",
-}
+local function screen_mouse_inside(x, y, width, height)
+    -- InputGetMousePosOnScreen returns physical screen coordinates while
+    -- Noita GUI uses its virtual viewport coordinates. Convert through the
+    -- same camera mapping used by the shipped GUI helpers.
+    local mouse_x, mouse_y = DEBUG_GetMouseWorld()
+    local camera_x, camera_y, camera_w, camera_h = GameGetCameraBounds()
+    local gui_w, gui_h = GuiGetScreenDimensions(organizer_gui)
+    mouse_x = (mouse_x - camera_x) * gui_w / camera_w
+    mouse_y = (mouse_y - camera_y) * gui_h / camera_h
+    return mouse_x >= x and mouse_x <= x + width
+        and mouse_y >= y and mouse_y <= y + height
+end
 
 local function draw_type_filters(x, y)
     local filters = { { "All", "All stored spells", nil } }
@@ -469,38 +459,77 @@ local function draw_type_filters(x, y)
             or ("mods/spell_organizer/files/gui/buttons/type_filter_" .. tostring(i - 2) .. ".png")
         if active then
             GuiZSetForNextWidget(organizer_gui, 1)
-            GuiImage(organizer_gui, 9137450 + i, x + (i - 1) * 19, y, "mods/spell_lab_shugged/files/gui/buttons/spell_box_active.png", 1, 1, 0)
+            GuiImage(organizer_gui, 9137450 + i, x + (i - 1) * 19, y, "mods/spell_organizer/files/gui/buttons/spell_box_0_active.png", 1, 1, 0)
         end
         GuiColorSetForNextWidget(organizer_gui, active and 1 or 0.72, active and 1 or 0.72, active and 0.5 or 0.72, 1)
-        if GuiImageButton(organizer_gui, 9137400 + i, x + (i - 1) * 19, y, "", icon) then
+        GuiOptionsAddForNextWidget(organizer_gui, GUI_OPTION.NonInteractive)
+        GuiImageButton(organizer_gui, 9137400 + i, x + (i - 1) * 19, y, "", icon)
+        if InputIsMouseButtonJustDown(1)
+            and screen_mouse_inside(x + (i - 1) * 19, y, 19, 19) then
             selected_type = type_value
         end
-        GuiTooltip(organizer_gui, GameTextGetTranslatedOrNot(entry[2]), active and "Selected" or "")
+        -- Diagnostic: native GuiTooltip on category buttons is disabled.
+        -- Hover/click behavior remains; test category and world-material popups separately.
     end
+end
+
+local function draw_spell_tooltip(group, hovered, icon_x, icon_y, icon_w, icon_h)
+    if not hovered then return end
+    GuiIdPushString(organizer_gui, "SPELL_ORGANIZER_TOOLTIP")
+    GuiLayoutBeginLayer(organizer_gui)
+    GuiOptionsAddForNextWidget(organizer_gui, GUI_OPTION.Layout_NoLayouting)
+    GuiOptionsAddForNextWidget(organizer_gui, GUI_OPTION.NonInteractive)
+    GuiText(organizer_gui, icon_x + icon_w + 4, icon_y, spell_display_name(group.action_id))
+    GuiOptionsAddForNextWidget(organizer_gui, GUI_OPTION.Layout_NoLayouting)
+    GuiOptionsAddForNextWidget(organizer_gui, GUI_OPTION.NonInteractive)
+    GuiText(organizer_gui, icon_x + icon_w + 4, icon_y + 10, group.action_id)
+    GuiOptionsAddForNextWidget(organizer_gui, GUI_OPTION.Layout_NoLayouting)
+    GuiOptionsAddForNextWidget(organizer_gui, GUI_OPTION.NonInteractive)
+    GuiText(organizer_gui, icon_x + icon_w + 4, icon_y + 20, "Stored: " .. tostring(#group.entities))
+    GuiLayoutEndLayer(organizer_gui)
+    GuiIdPop(organizer_gui)
 end
 
 local function draw_spell_grid(groups, x, y)
     local cells = {}
+    local tooltip_request = nil
     GuiBeginScrollContainer(organizer_gui, 9137500, x, y, GRID_W, GRID_H)
-    for index, group in ipairs(groups) do
-        local column = (index - 1) % GRID_COLUMNS
-        local row = math.floor((index - 1) / GRID_COLUMNS)
-        local cell_x = column * (CELL_W + CELL_GAP) + 2
-        local cell_y = row * CELL_H + 2
-        local action = get_action_metadata(group.action_id)
-        local sprite = (action and action.sprite) or action_sprite(group.action_id)
-        local background = TYPE_BACKGROUNDS[action and action.type]
-        -- Keep the first port intentionally minimal: Spell Lab action sprite
-        -- plus our live count. Reintroduce decorative spell frames only after
-        -- the icon render path is confirmed in-game.
-        local clicked = GuiImageButton(organizer_gui, 9137000 + index, cell_x, cell_y, "", sprite)
-        GuiTooltip(organizer_gui, spell_display_name(group.action_id) .. " x" .. tostring(#group.entities), group.action_id)
-        GuiZSetForNextWidget(organizer_gui, -1)
-        GuiText(organizer_gui, cell_x + 17, cell_y + 15, tostring(#group.entities))
-        cells[#cells + 1] = { group = group, clicked = clicked }
+    GuiLayoutBeginVertical(organizer_gui, 0, 0, false, 0, 0)
+    for first = 1, #groups, GRID_COLUMNS do
+        GuiLayoutBeginHorizontal(organizer_gui, 0, 0, false, 1, 0)
+        for index = first, math.min(first + GRID_COLUMNS - 1, #groups) do
+            local group = groups[index]
+            local action = get_action_metadata(group.action_id)
+            local sprite = action_sprite(group.action_id)
+            if action ~= nil and action.sprite ~= nil
+                and string.find(action.sprite, "data/ui_gfx/gun_actions/", 1, true) == 1 then
+                sprite = action.sprite
+            end
+            GuiLayoutBeginVertical(organizer_gui, 0, 0, false, 0, 0)
+            GuiIdPushString(organizer_gui, "SPELL_CELL_" .. group.action_id)
+            GuiOptionsAddForNextWidget(organizer_gui, GUI_OPTION.NonInteractive)
+            GuiImage(organizer_gui, 9137100, 0, 0, sprite, 1, 1, 0)
+            local _, _, _, icon_x, icon_y, icon_w, icon_h = GuiGetPreviousWidgetInfo(organizer_gui)
+            local hovered = screen_mouse_inside(icon_x, icon_y, icon_w, icon_h)
+            local clicked = hovered and InputIsMouseButtonJustDown(1)
+            GuiOptionsAddForNextWidget(organizer_gui, GUI_OPTION.Layout_NoLayouting)
+            GuiText(organizer_gui, icon_x + 17, icon_y + 15, tostring(#group.entities))
+            if CUSTOM_SPELL_TOOLTIP_ENABLED and hovered then
+                tooltip_request = { group = group, x = icon_x, y = icon_y, w = icon_w, h = icon_h }
+            end
+            GuiIdPop(organizer_gui)
+            GuiLayoutEnd(organizer_gui)
+            cells[#cells + 1] = { group = group, clicked = clicked }
+        end
+        GuiLayoutEnd(organizer_gui)
+        GuiLayoutAddVerticalSpacing(organizer_gui, -2)
     end
-    if #groups == 0 then GuiText(organizer_gui, 2, 2, "No stored spells match") end
+    if #groups == 0 then GuiText(organizer_gui, 0, 0, "No stored spells match") end
+    GuiLayoutEnd(organizer_gui)
     GuiEndScrollContainer(organizer_gui)
+    if tooltip_request ~= nil then
+        draw_spell_tooltip(tooltip_request.group, true, tooltip_request.x, tooltip_request.y, tooltip_request.w, tooltip_request.h)
+    end
     return cells
 end
 
@@ -529,9 +558,8 @@ function OnWorldPreUpdate()
     local player = get_player()
     if player == nil then return end
     local width, height = GuiGetScreenDimensions(organizer_gui)
-    local inventory_open = GameIsInventoryOpen()
-    local x = inventory_open and (width - PANEL_W - 6) or (width - PANEL_W) / 2
-    local y = inventory_open and (height - PANEL_H - 6) or (height - PANEL_H) / 2
+    local x = width - PANEL_W - 8
+    local y = height - PANEL_H - 8
     if mouse_inside_rect(x, y, PANEL_W, PANEL_H) then
         clear_gameplay_mouse_input(player)
     end
@@ -575,51 +603,52 @@ function OnWorldPostUpdate()
     end
     inventory_was_open = inventory_open
 
-    if not inventory_open and InputIsKeyJustDown(get_open_key_code()) and not search_input_is_active() then
+    -- Keep the standalone Q path available, but disabled for companion UX.
+    if ENABLE_Q_OPEN and not inventory_open and InputIsKeyJustDown(get_open_key_code()) and not search_input_is_active() then
         organizer_open = not organizer_open
-        if not organizer_open then
-            set_search_focus(false)
-        end
-        print("[SpellOrganizer] panel " .. (organizer_open and "opened" or "closed"))
-    elseif not inventory_open and InputIsKeyJustDown(ESCAPE_KEY_CODE) and organizer_open then
+        if not organizer_open then set_search_focus(false) end
+    elseif ENABLE_Q_OPEN and not inventory_open and InputIsKeyJustDown(ESCAPE_KEY_CODE) and organizer_open then
         organizer_open = false
         set_search_focus(false)
-        print("[SpellOrganizer] panel closed")
     end
 
-    if not organizer_open and not inventory_open then
+    if not organizer_open then
         set_search_focus(false)
         return
     end
 
     GuiIdPushString(organizer_gui, "SPELL_ORGANIZER_GUI")
-    GuiOptionsAdd(organizer_gui, GUI_OPTION.DrawAlwaysVisible)
     GuiOptionsAdd(organizer_gui, GUI_OPTION.NoPositionTween)
-    GuiOptionsAdd(organizer_gui, GUI_OPTION.HandleDoubleClickAsClick)
-    GuiOptionsAdd(organizer_gui, GUI_OPTION.ClickCancelsDoubleClick)
-    GuiZSet(organizer_gui, -1000)
     local screen_width, screen_height = GuiGetScreenDimensions(organizer_gui)
-    local modal_x = inventory_open and (screen_width - PANEL_W - 6) or (screen_width * 0.5 - PANEL_W * 0.5)
-    local modal_y = inventory_open and (screen_height - PANEL_H - 6) or (screen_height * 0.5 - PANEL_H * 0.5)
+    local modal_x = screen_width - PANEL_W - 8
+    local modal_y = screen_height - PANEL_H - 8
     local grid_x = modal_x + 10
     local grid_y = modal_y + 54
     if organizer_open and mouse_inside_rect(modal_x, modal_y, PANEL_W, PANEL_H) then
         clear_gameplay_mouse_input(player)
     end
     GuiImageNinePiece(organizer_gui, 10, modal_x, modal_y, PANEL_W, PANEL_H, 1, "data/ui_gfx/decorations/9piece0_gray.png", "data/ui_gfx/decorations/9piece0_gray.png")
-    GuiText(organizer_gui, modal_x + 8, modal_y + 8, "Search:")
-    stored_search = GuiTextInput(organizer_gui, SEARCH_INPUT_ID, modal_x + SEARCH_X_OFFSET + 38, modal_y + SEARCH_Y_OFFSET, stored_search, SEARCH_W, SEARCH_H, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789") or stored_search
-    local input_clicked, _, input_hovered = GuiGetPreviousWidgetInfo(organizer_gui)
-    update_search_focus_from_widget(input_clicked, input_hovered)
+    GuiZSet(organizer_gui, 0)
     draw_type_filters(modal_x + 8, modal_y + 30)
     local organizer_groups = filter_groups(sort_groups(group_spells(get_entity_spells(storage))))
     local organizer_cells = draw_spell_grid(organizer_groups, grid_x, grid_y)
     handle_organizer_clicks(organizer_cells, player)
-    GuiOptionsAddForNextWidget(organizer_gui, GUI_OPTION.DrawNoHoverAnimation)
-    if GuiButton(organizer_gui, 9137999, modal_x + 10, modal_y + PANEL_H - 22, "Absorb all") then
+    GuiOptionsAddForNextWidget(organizer_gui, GUI_OPTION.NonInteractive)
+    GuiText(organizer_gui, modal_x + 10, modal_y + PANEL_H - 22, "Absorb all")
+    if InputIsMouseButtonJustDown(1)
+        and screen_mouse_inside(modal_x + 8, modal_y + PANEL_H - 26, PANEL_W - 16, 20) then
         local count = absorb_available_spells(player, storage)
         GamePrint("Spell Organizer: absorbed " .. tostring(count))
     end
+    -- Draw Search last in widget order so spell hover cannot dim it. Its
+    -- screen coordinates remain at the top of the modal; only render order
+    -- changes. The filter applies on the next frame after text input changes.
+    GuiOptionsAddForNextWidget(organizer_gui, GUI_OPTION.DrawNoHoverAnimation)
+    GuiText(organizer_gui, modal_x + 8, modal_y + 8, "Search:")
+    GuiOptionsAddForNextWidget(organizer_gui, GUI_OPTION.DrawNoHoverAnimation)
+    stored_search = GuiTextInput(organizer_gui, SEARCH_INPUT_ID, modal_x + SEARCH_X_OFFSET + 38, modal_y + SEARCH_Y_OFFSET, stored_search, SEARCH_W, SEARCH_H, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789") or stored_search
+    local input_clicked, _, input_hovered = GuiGetPreviousWidgetInfo(organizer_gui)
+    update_search_focus_from_widget(input_clicked, input_hovered)
     GuiIdPop(organizer_gui)
 end
 

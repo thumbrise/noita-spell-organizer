@@ -8,7 +8,7 @@
 
 Spell Organizer — QoL-мод для организации заклинаний, найденных в текущем забеге.
 
-Мод добавляет игроку доступный по клавише `O` (настраивается) органайзер без отдельного предмета в быстром инвентаре. Содержимое хранится в привязанной к игроку сущности.
+Мод добавляет игроку компактный companion-органайзер, который открывается вместе с ванильным инвентарём по `I`, без отдельного предмета в быстром инвентаре. Содержимое хранится в привязанной к игроку сущности. Старый standalone-Q путь сохранён в коде, но отключён.
 
 Органайзер не является глобальной базой всех заклинаний, чит-меню или лабораторией. Он содержит только физические экземпляры карт, поглощённые игроком по явной команде из `inventory_full` или с земли в пределах радиуса.
 
@@ -50,12 +50,13 @@ Spell Organizer — QoL-мод для организации заклинани�
 
 ### Текущий флоу с картами
 
-- Проверено пользователем в игре: `O` открывает модалку без предмета в инвентаре, массовое всасывание и поштучная выдача продолжают работать. В файле сохранения `D:/Steam/steamapps/common/Noita/save00/player.xml` проверено ровно одно `spell_organizer_storage` с тремя прямыми дочерними spell-картами и отсутствие старой книги. Сохранение содержимого на диск подтверждено; повторную загрузку с точным сравнением экземпляров и изменение клавиши через настройки проверять отдельно.
-- Клавиша `O` открывает/закрывает отдельную модалку; её можно изменить в настройках мода (буквы A–Z). При открытии ванильного инвентаря на `I` органайзер автоматически появляется рядом с ним; при закрытии инвентаря органайзер также закрывается.
-- Кнопка **Absorb all** за одно нажатие забирает все доступные карты из `inventory_full` и свободные карты с земли в радиусе действия. Карты внутри посохов не трогаются, магазинные и контейнерные карты в мире исключаются.
-- В органайзере одинаковые `action_id` сгруппированы только визуально; хранятся реальные отдельные экземпляры. Интерфейс показывает только скрытое хранилище: вкладки `Inv` и `Nearby` не нужны, потому что внешний инвентарь и мир являются только источниками для явной операции **Absorb all**.
-- Клик по группе возвращает **ровно один** реальный экземпляр в свободный слот `inventory_full`. Карта не выбрасывается в мир, поэтому не зависит от закрытой движковой физики vanilla drag/drop. Если свободного места нет, операция отменяется без удаления карты.
-- Для игры картой после выброса используется обычный подбор и ванильный инвентарь.
+- `Q` fallback code remains in `init.lua` behind `ENABLE_Q_OPEN = false`; it is intentionally inactive while companion mode is evaluated.
+- Opening vanilla inventory on `I` opens the compact organizer at the lower-right of the screen. Closing vanilla inventory closes the organizer.
+- The companion panel uses passive rendering for categories, spell cells, and Absorb; clicks are resolved by screen-coordinate hit testing. Search remains a real text input so typing and freeze work.
+- The organizer uses one persistent GUI context and one `GuiStartFrame` per update. It does not add interactive Noita button widgets over vanilla inventory.
+
+- **Absorb all** moves eligible cards from `inventory_full` and nearby free ground cards into hidden storage; wand children and shop/container cards are excluded.
+- A group click returns one real entity to the first free `inventory_full` slot; no card is recreated from `action_id`.
 
 **Контракт:** массовое всасывание по явной команде, поштучная выдача по клику. Никакого drag-and-drop или автоподбора в каждом кадре.
 
@@ -250,14 +251,10 @@ Fast-click по заклинанию в органайзере возвраща�
 
 - Hello Mod загружается в `noita_dev.exe`.
 - Spell Organizer выдаётся один раз на новый забег и не дублируется при загрузке save.
-- Книга открывает диагностическую панель по клавише B; панель закрывается Escape/кнопкой и при переключении с книги.
-- Карты обнаруживаются под посохами через `ItemActionComponent.action_id`.
-- Физический экземпляр карты переносится между посохом и книгой по одному.
-- Пользователь протестировал полный round-trip и отказ при полной вместимости посоха; потери, дублирования и багов слотов не обнаружено.
-
-Текущий GUI — тестовый прототип, не финальная компоновка. Подтверждённое направление UI: добавить четвёртую панель Spell Organizer справа от панели посохов и под обычной панелью инвентаря.
-
-Текущий прототип сортирует группы по `action_id` и показывает заполненность выбранного посоха в формате `Current wand N/M`. Перенос по-прежнему выполняется ровно по одному физическому экземпляру.
+- `I` opens vanilla inventory and the compact companion organizer; closing inventory closes the companion.
+- Q fallback code remains in `init.lua` behind `ENABLE_Q_OPEN = false`; it is intentionally inactive.
+- The organizer shows live spell groups and counts; one click returns one physical card to the first free full-inventory slot.
+- The GUI uses one persistent context and no production clone or harness.
 
 ## 10. После MVP
 

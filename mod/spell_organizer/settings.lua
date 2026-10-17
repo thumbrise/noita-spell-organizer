@@ -13,8 +13,8 @@ mod_settings = {
     {
         id = "open_key",
         ui_name = "Open Spell Organizer",
-        ui_description = "Choose a letter key. Default: O (next to inventory I).",
-        value_default = "O",
+        ui_description = "Spell Organizer opens beside vanilla inventory (Q fallback currently disabled).",
+        value_default = "Q",
         values = keys,
         scope = MOD_SETTING_SCOPE_RUNTIME,
     },
