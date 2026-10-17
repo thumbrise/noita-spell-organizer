@@ -1,4 +1,5 @@
 dofile_once("data/scripts/lib/utilities.lua")
+dofile_once("data/scripts/gun/gun_enums.lua")
 
 -- Press O (configurable in mod settings) to open the player-bound organizer.
 local STORAGE_NAME = "noita_inventory_storage"
@@ -9,11 +10,129 @@ local open_key_code = 18 -- O; see data/scripts/debug/keycodes.lua
 
 local organizer_gui = GuiCreate()
 local organizer_open = false
-local PANEL_W = 108
-local PANEL_H = 180
-local CELL_SIZE = 28
-local CELL_GAP = 3
+local inventory_was_open = false
+local PANEL_W = 198
+local PANEL_H = 198
+local GRID_W = PANEL_W - 20
+local GRID_H = 112
+local GRID_COLUMNS = 6
+local CELL_W = 28
+local CELL_H = 27
+local CELL_GAP = 1
+
+local SEARCH_X_OFFSET = 8
+local SEARCH_Y_OFFSET = 8
+local SEARCH_W = 104
+local SEARCH_H = 14
 local PICKUP_RADIUS = 24
+local stored_search = ""
+local SEARCH_INPUT_ACTIVE = false
+local SEARCH_INPUT_ID = 9137200
+
+local function freeze_player_controls()
+    for _, player in ipairs(EntityGetWithTag("player_unit") or {}) do
+        local disabler = EntityCreateNew("noita_inventory_controls_disabler")
+        EntityAddTag(disabler, "noita_inventory_controls_disabler")
+        EntityAddTag(disabler, "noita_inventory_non_toxic_status")
+        EntityAddChild(player, disabler)
+        EntityAddComponent2(disabler, "InheritTransformComponent")
+        EntityAddComponent2(disabler, "GameEffectComponent", {
+            frames = -1,
+            disable_movement = true,
+            effect = "FROZEN",
+        })
+    end
+end
+
+local function unfreeze_player_controls()
+    for _, disabler in ipairs(EntityGetWithTag("noita_inventory_controls_disabler") or {}) do
+        local effect = EntityGetFirstComponentIncludingDisabled(disabler, "GameEffectComponent")
+        if effect ~= nil then
+            ComponentSetValue2(effect, "frames", 1)
+        end
+    end
+end
+
+local function set_search_focus(active)
+    if SEARCH_INPUT_ACTIVE == active then return end
+    SEARCH_INPUT_ACTIVE = active
+    if active then
+        freeze_player_controls()
+    else
+        unfreeze_player_controls()
+    end
+end
+
+local selected_type = nil -- nil means all action categories
+local ACTION_TYPES = {
+    { "P", "$inventory_actiontype_projectile", ACTION_TYPE_PROJECTILE },
+    { "S", "$inventory_actiontype_staticprojectile", ACTION_TYPE_STATIC_PROJECTILE },
+    { "M", "$inventory_actiontype_modifier", ACTION_TYPE_MODIFIER },
+    { "D", "$inventory_actiontype_drawmany", ACTION_TYPE_DRAW_MANY },
+    { "T", "$inventory_actiontype_material", ACTION_TYPE_MATERIAL },
+    { "U", "$inventory_actiontype_utility", ACTION_TYPE_UTILITY },
+    { "O", "$inventory_actiontype_other", ACTION_TYPE_OTHER },
+    { "V", "$inventory_actiontype_passive", ACTION_TYPE_PASSIVE },
+}
+
+local action_metadata = {}
+local action_metadata_loaded = false
+local function get_action_metadata(action_id)
+    if not action_metadata_loaded then
+        -- The vanilla table also includes actions appended by enabled mods.
+        dofile_once("data/scripts/gun/gun_actions.lua")
+        if actions ~= nil then
+            for _, action in ipairs(actions) do
+                if action.id ~= nil then action_metadata[action.id] = action end
+            end
+        end
+        action_metadata_loaded = true
+    end
+    return action_metadata[action_id] -- Unknown cards remain in All.
+end
+
+local function update_search_focus_from_widget(input_clicked, input_hovered)
+    local clicked = input_clicked == true or input_clicked == 1
+    local hovered = input_hovered == true or input_hovered == 1
+    if clicked then
+        set_search_focus(true)
+    elseif InputIsMouseButtonJustDown(1) and not hovered then
+        set_search_focus(false)
+    end
+end
+
+local function search_input_is_active()
+    return SEARCH_INPUT_ACTIVE
+end
+
+local function spell_display_name(action_id)
+    local action = get_action_metadata(action_id)
+    if action ~= nil and action.name ~= nil then
+        return GameTextGetTranslatedOrNot(action.name)
+    end
+    return action_id
+end
+
+local function matches_search(action_id)
+    if stored_search == "" then return true end
+    local needle = string.lower(stored_search)
+    return string.find(string.lower(action_id), needle, 1, true) ~= nil
+        or string.find(string.lower(spell_display_name(action_id)), needle, 1, true) ~= nil
+end
+
+
+
+local function filter_groups(groups)
+    local result = {}
+    for _, group in ipairs(groups) do
+        local action = get_action_metadata(group.action_id)
+        if matches_search(group.action_id)
+            and (selected_type == nil or (action ~= nil and action.type == selected_type)) then
+            table.insert(result, group)
+        end
+    end
+    return result
+end
 
 
 local function set_card_sprite_state(spell)
@@ -106,30 +225,90 @@ local function absorb_available_spells(player, organizer)
     return count
 end
 
+local function find_full_inventory(player)
+    for _, child in ipairs(EntityGetAllChildren(player) or {}) do
+        if EntityGetName(child) == "inventory_full" then
+            return child
+        end
+    end
+    return nil
+end
+
+local function find_free_full_inventory_slot(player)
+    local full_inventory = find_full_inventory(player)
+    if full_inventory == nil then
+        return nil, nil, nil
+    end
+
+    local inventory_component = EntityGetFirstComponentIncludingDisabled(player, "Inventory2Component")
+    if inventory_component == nil then
+        return nil, nil, full_inventory
+    end
+    local slots_x = ComponentGetValue2(inventory_component, "full_inventory_slots_x") or 0
+    local slots_y = ComponentGetValue2(inventory_component, "full_inventory_slots_y") or 0
+    if slots_x <= 0 or slots_y <= 0 then
+        return nil, nil, full_inventory
+    end
+
+    local occupied = {}
+    for _, item in ipairs(EntityGetAllChildren(full_inventory) or {}) do
+        local item_component = EntityGetFirstComponentIncludingDisabled(item, "ItemComponent")
+        if item_component ~= nil then
+            local slot_x, slot_y = ComponentGetValue2(item_component, "inventory_slot")
+            if slot_x ~= nil and slot_y ~= nil and slot_x >= 0 and slot_y >= 0 then
+                occupied[tostring(slot_x) .. ":" .. tostring(slot_y)] = true
+            end
+        end
+    end
+
+    for slot_y = 0, slots_y - 1 do
+        for slot_x = 0, slots_x - 1 do
+            if not occupied[tostring(slot_x) .. ":" .. tostring(slot_y)] then
+                return slot_x, slot_y, full_inventory
+            end
+        end
+    end
+    return nil, nil, full_inventory
+end
+
 local function drop_one_spell_from_organizer(spell, player)
     if spell == nil or player == nil then
         return false
     end
-    local x, y = EntityGetTransform(player)
-    EntityRemoveFromParent(spell)
-    if EntityGetParent(spell) ~= 0 then
+
+    local full_inventory = find_full_inventory(player)
+    if full_inventory == nil then
+        print("[NoitaInventory] return failed: inventory_full not found")
         return false
     end
-    EntitySetTransform(spell, x, y + 12)
-    -- Experimental vanilla-path probe: put the real card through the
-    -- player's inventory pickup/drop ownership path instead of assigning a
-    -- custom velocity. The actual GUI throw remains engine-owned.
-    GamePickUpInventoryItem(player, spell, false)
-    if EntityGetParent(spell) == 0 then
-        EntitySetComponentsWithTagEnabled(spell, "enabled_in_world", true)
-        set_card_sprite_state(spell)
-        return true
+
+    local slot_x, slot_y, full_inventory = find_free_full_inventory_slot(player)
+    if full_inventory == nil or slot_x == nil or slot_y == nil then
+        GamePrint("Spell Organizer: full inventory is full")
+        return false
     end
-    print("[NoitaInventory] vanilla drop probe: pickup path retained card")
+
+    local item_component = EntityGetFirstComponentIncludingDisabled(spell, "ItemComponent")
+    if item_component == nil then
+        return false
+    end
+    local old_slot_x, old_slot_y = ComponentGetValue2(item_component, "inventory_slot")
+
+    -- EntityAddChild does not allocate a free inventory slot. Set the exact
+    -- free ItemComponent.inventory_slot first, otherwise cards retain the
+    -- storage/default slot and visually overlap in the vanilla grid.
+    ComponentSetValue2(item_component, "inventory_slot", slot_x, slot_y)
     EntityRemoveFromParent(spell)
-    EntitySetTransform(spell, x, y + 12)
-    EntitySetComponentsWithTagEnabled(spell, "enabled_in_world", true)
-    set_card_sprite_state(spell)
+    EntityAddChild(full_inventory, spell)
+    if EntityGetParent(spell) ~= full_inventory then
+        EntityRemoveFromParent(spell)
+        if old_slot_x ~= nil and old_slot_y ~= nil then
+            ComponentSetValue2(item_component, "inventory_slot", old_slot_x, old_slot_y)
+        end
+        EntityAddChild(get_storage(player), spell)
+        return false
+    end
+    EntitySetComponentsWithTagEnabled(spell, "enabled_in_world", false)
     return true
 end
 
@@ -228,6 +407,7 @@ local function get_entity_spells(container)
     return result
 end
 
+
 local function group_spells(spells)
     local groups = {}
     local by_action = {}
@@ -252,36 +432,113 @@ local function sort_groups(groups)
     return groups
 end
 
+
 local function action_sprite(action_id)
     return "data/ui_gfx/gun_actions/" .. string.lower(action_id) .. ".png"
 end
 
-
-
-local function draw_spell_grid(groups, x, y, widget_prefix)
-    local cells = {}
-    local columns = 3
-    for index, group in ipairs(groups) do
-        local column = (index - 1) % columns
-        local row = math.floor((index - 1) / columns)
-        local cell_x = x + column * (CELL_SIZE + CELL_GAP)
-        local cell_y = y + row * (CELL_SIZE + CELL_GAP)
-        GuiOptionsAdd(organizer_gui, GUI_OPTION.DrawAlwaysVisible)
-        GuiZSet(organizer_gui, -100)
-        GuiOptionsAddForNextWidget(organizer_gui, GUI_OPTION.DrawNoHoverAnimation)
-        local clicked = GuiImageButton(organizer_gui, 9137000 + index, cell_x, cell_y, "", action_sprite(group.action_id))
-        GuiText(organizer_gui, cell_x + 21, cell_y + 20, tostring(#group.entities))
-        table.insert(cells, { group = group, clicked = clicked })
-    end
-    return cells
+local function action_group_can_return(group, player)
+    return drop_one_spell_from_organizer(group.entities[1], player)
 end
 
 
 
+local TYPE_BACKGROUNDS = {
+    [ACTION_TYPE_PROJECTILE] = "projectile",
+    [ACTION_TYPE_STATIC_PROJECTILE] = "static_projectile",
+    [ACTION_TYPE_MODIFIER] = "modifier",
+    [ACTION_TYPE_DRAW_MANY] = "draw_many",
+    [ACTION_TYPE_MATERIAL] = "material",
+    [ACTION_TYPE_OTHER] = "other",
+    [ACTION_TYPE_UTILITY] = "utility",
+    [ACTION_TYPE_PASSIVE] = "passive",
+}
+
+local function draw_type_filters(x, y)
+    local filters = { { "All", "All stored spells", nil } }
+    for _, entry in ipairs(ACTION_TYPES) do
+        filters[#filters + 1] = entry
+    end
+    for i, entry in ipairs(filters) do
+        local type_value = entry[3]
+        local active = (i == 1 and selected_type == nil) or (i > 1 and selected_type == type_value)
+        local icon = i == 1
+            and "mods/noita_inventory/files/gui/buttons/type_filter_all.png"
+            or ("mods/noita_inventory/files/gui/buttons/type_filter_" .. tostring(i - 2) .. ".png")
+        if active then
+            GuiZSetForNextWidget(organizer_gui, 1)
+            GuiImage(organizer_gui, 9137450 + i, x + (i - 1) * 19, y, "mods/spell_lab_shugged/files/gui/buttons/spell_box_active.png", 1, 1, 0)
+        end
+        GuiColorSetForNextWidget(organizer_gui, active and 1 or 0.72, active and 1 or 0.72, active and 0.5 or 0.72, 1)
+        if GuiImageButton(organizer_gui, 9137400 + i, x + (i - 1) * 19, y, "", icon) then
+            selected_type = type_value
+        end
+        GuiTooltip(organizer_gui, GameTextGetTranslatedOrNot(entry[2]), active and "Selected" or "")
+    end
+end
+
+local function draw_spell_grid(groups, x, y)
+    local cells = {}
+    GuiBeginScrollContainer(organizer_gui, 9137500, x, y, GRID_W, GRID_H)
+    for index, group in ipairs(groups) do
+        local column = (index - 1) % GRID_COLUMNS
+        local row = math.floor((index - 1) / GRID_COLUMNS)
+        local cell_x = column * (CELL_W + CELL_GAP) + 2
+        local cell_y = row * CELL_H + 2
+        local action = get_action_metadata(group.action_id)
+        local sprite = (action and action.sprite) or action_sprite(group.action_id)
+        local background = TYPE_BACKGROUNDS[action and action.type]
+        -- Keep the first port intentionally minimal: Spell Lab action sprite
+        -- plus our live count. Reintroduce decorative spell frames only after
+        -- the icon render path is confirmed in-game.
+        local clicked = GuiImageButton(organizer_gui, 9137000 + index, cell_x, cell_y, "", sprite)
+        GuiTooltip(organizer_gui, spell_display_name(group.action_id) .. " x" .. tostring(#group.entities), group.action_id)
+        GuiZSetForNextWidget(organizer_gui, -1)
+        GuiText(organizer_gui, cell_x + 17, cell_y + 15, tostring(#group.entities))
+        cells[#cells + 1] = { group = group, clicked = clicked }
+    end
+    if #groups == 0 then GuiText(organizer_gui, 2, 2, "No stored spells match") end
+    GuiEndScrollContainer(organizer_gui)
+    return cells
+end
+
+local function clear_gameplay_mouse_input(player)
+    for _, component in ipairs(EntityGetComponentIncludingDisabled(player, "ControlsComponent") or {}) do
+        ComponentSetValue2(component, "mButtonDownFire", false)
+        ComponentSetValue2(component, "mButtonDownFire2", false)
+        ComponentSetValue2(component, "mButtonDownThrow", false)
+        ComponentSetValue2(component, "mButtonFrameFire", 0)
+        ComponentSetValue2(component, "mButtonFrameFire2", 0)
+        ComponentSetValue2(component, "mButtonFrameThrow", 0)
+    end
+end
+
+local function mouse_inside_rect(x, y, width, height)
+    local mouse_x, mouse_y = DEBUG_GetMouseWorld()
+    local camera_x, camera_y, camera_w, camera_h = GameGetCameraBounds()
+    local gui_w, gui_h = GuiGetScreenDimensions(organizer_gui)
+    mouse_x = (mouse_x - camera_x) * gui_w / camera_w
+    mouse_y = (mouse_y - camera_y) * gui_h / camera_h
+    return mouse_x >= x and mouse_x <= x + width and mouse_y >= y and mouse_y <= y + height
+end
+
+function OnWorldPreUpdate()
+    if not organizer_open and not GameIsInventoryOpen() then return end
+    local player = get_player()
+    if player == nil then return end
+    local width, height = GuiGetScreenDimensions(organizer_gui)
+    local inventory_open = GameIsInventoryOpen()
+    local x = inventory_open and (width - PANEL_W - 6) or (width - PANEL_W) / 2
+    local y = inventory_open and (height - PANEL_H - 6) or (height - PANEL_H) / 2
+    if mouse_inside_rect(x, y, PANEL_W, PANEL_H) then
+        clear_gameplay_mouse_input(player)
+    end
+end
+
 local function handle_organizer_clicks(cells, player)
     for _, cell in ipairs(cells) do
         if cell.clicked then
-            if drop_one_spell_from_organizer(cell.group.entities[1], player) then
+            if action_group_can_return(cell.group, player) then
                 print("[NoitaInventory] dropped one spell: " .. cell.group.action_id)
             end
             return
@@ -302,44 +559,62 @@ function OnWorldPostUpdate()
     end
     migrate_legacy_book(player, storage)
 
-    if GameIsInventoryOpen() then
+    local inventory_open = GameIsInventoryOpen()
+    if inventory_open and not inventory_was_open then
+        organizer_open = true
+        set_search_focus(false)
+    elseif not inventory_open and inventory_was_open then
         organizer_open = false
+        set_search_focus(false)
     end
+    inventory_was_open = inventory_open
 
-    if InputIsKeyJustDown(get_open_key_code()) and not GameIsInventoryOpen() then
+    if not inventory_open and InputIsKeyJustDown(get_open_key_code()) and not search_input_is_active() then
         organizer_open = not organizer_open
+        if not organizer_open then
+            set_search_focus(false)
+        end
         print("[NoitaInventory] organizer panel " .. (organizer_open and "opened" or "closed"))
-    elseif InputIsKeyJustDown(ESCAPE_KEY_CODE) and organizer_open then
+    elseif not inventory_open and InputIsKeyJustDown(ESCAPE_KEY_CODE) and organizer_open then
         organizer_open = false
+        set_search_focus(false)
         print("[NoitaInventory] organizer panel closed")
     end
 
-    if not organizer_open then
+    if not organizer_open and not inventory_open then
+        set_search_focus(false)
         return
     end
 
-    local organizer_spells = get_entity_spells(storage)
-    local organizer_groups = sort_groups(group_spells(organizer_spells))
-
     GuiStartFrame(organizer_gui)
+    GuiIdPushString(organizer_gui, "NOITA_INVENTORY_ORGANIZER")
     GuiOptionsAdd(organizer_gui, GUI_OPTION.DrawAlwaysVisible)
-    GuiZSet(organizer_gui, -100)
+    GuiOptionsAdd(organizer_gui, GUI_OPTION.NoPositionTween)
+    GuiOptionsAdd(organizer_gui, GUI_OPTION.HandleDoubleClickAsClick)
+    GuiOptionsAdd(organizer_gui, GUI_OPTION.ClickCancelsDoubleClick)
+    GuiZSet(organizer_gui, -1000)
     local screen_width, screen_height = GuiGetScreenDimensions(organizer_gui)
-    local modal_x = screen_width * 0.5 - PANEL_W * 0.5
-    local modal_y = screen_height * 0.5 - PANEL_H * 0.5
-    local grid_x = modal_x + 12
-    local grid_y = modal_y + 32
-
+    local modal_x = inventory_open and (screen_width - PANEL_W - 6) or (screen_width * 0.5 - PANEL_W * 0.5)
+    local modal_y = inventory_open and (screen_height - PANEL_H - 6) or (screen_height * 0.5 - PANEL_H * 0.5)
+    local grid_x = modal_x + 10
+    local grid_y = modal_y + 54
+    if organizer_open and mouse_inside_rect(modal_x, modal_y, PANEL_W, PANEL_H) then
+        clear_gameplay_mouse_input(player)
+    end
     GuiImageNinePiece(organizer_gui, 10, modal_x, modal_y, PANEL_W, PANEL_H, 1, "data/ui_gfx/decorations/9piece0_gray.png", "data/ui_gfx/decorations/9piece0_gray.png")
-    GuiText(organizer_gui, modal_x + 10, modal_y + 8, "SPELL ORGANIZER")
-    GuiText(organizer_gui, grid_x, modal_y + 20, "Stored spells")
-
-    local organizer_cells = draw_spell_grid(organizer_groups, grid_x, grid_y, 2000)
+    GuiText(organizer_gui, modal_x + 8, modal_y + 8, "Search:")
+    stored_search = GuiTextInput(organizer_gui, SEARCH_INPUT_ID, modal_x + SEARCH_X_OFFSET + 38, modal_y + SEARCH_Y_OFFSET, stored_search, SEARCH_W, SEARCH_H, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789") or stored_search
+    local input_clicked, _, input_hovered = GuiGetPreviousWidgetInfo(organizer_gui)
+    update_search_focus_from_widget(input_clicked, input_hovered)
+    draw_type_filters(modal_x + 8, modal_y + 30)
+    local organizer_groups = filter_groups(sort_groups(group_spells(get_entity_spells(storage))))
+    local organizer_cells = draw_spell_grid(organizer_groups, grid_x, grid_y)
     handle_organizer_clicks(organizer_cells, player)
     GuiOptionsAddForNextWidget(organizer_gui, GUI_OPTION.DrawNoHoverAnimation)
     if GuiButton(organizer_gui, 9137999, modal_x + 10, modal_y + PANEL_H - 22, "Absorb all") then
         local count = absorb_available_spells(player, storage)
         GamePrint("Spell Organizer: absorbed " .. tostring(count))
     end
+    GuiIdPop(organizer_gui)
 end
 

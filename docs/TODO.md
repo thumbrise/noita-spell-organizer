@@ -1,8 +1,21 @@
 # TODO — следующий заход
 
-## Текущий блокер: organizer → обычный инвентарь
+## Текущий блокер: UI-порт Spell Lab Shugged
 
 ### Наблюдение пользователя
+
+- Последний UI-тест: счётчик теперь виден без tooltip, но все spell icons выглядят disabled; это UI-layering/regression, не доказательство отключения entity.
+- При вводе в Search персонаж продолжает ходить. Нужен keyboard-focus/controls-freezing паттерн Spell Lab Shugged.
+- Общая компоновка приемлема, но текущая custom-сетка остаётся менее надёжной, чем проверенный picker Spell Lab Shugged.
+- Пользователь выбрал перенос picker-логики Spell Lab Shugged с вырезанием нечестной функциональности, а не дальнейшее изобретение собственного UI.
+- Пользователь подтвердил: vanilla wand tooltip больше не отключает organizer UI.
+- После запуска с category icons logger показал `Text - no translation for key '$inventory_actiontype_all'`. Это была наша ошибочная ссылка на несуществующий translation key для фильтра All; заменено на literal `All stored spells`. В логе также есть старое предупреждение `mods/spell_lab_shugged/files/lib/shortcut_setting.lua` от отдельного Spell Lab Workshop-мода; NoitaInventory этот путь не вызывает и это не причина ошибки нашего фильтра.
+- Последний пользовательский тест: selected category работает; поиск теперь принимает буквы, а `FROZEN` effect проверен пользователем и работает. Осталась визуальная проблема: Search label/input иногда получают чужой tooltip disabled/flicker state.
+- Ресерч подтвердил причину overlay при Return: `EntityAddChild(inventory_full, spell)` не распределяет entity по свободному слоту. Позиция хранится в `ItemComponent.inventory_slot` (vec2), а `Inventory2Component.full_inventory_slots_x/y` задаёт размер сетки. Старый код проверял только `#children < capacity`, поэтому несколько карт могли сохранить один и тот же старый/default slot и накладываться. Новый код строит occupancy-map по `inventory_slot`, выбирает первый свободный `(x,y)` row-major, записывает его до `EntityAddChild`, а при отказе восстанавливает parent и старый slot. В игре ещё не проверено.
+- GUI ресерч: `GuiIdPushString` действительно хеширует все вложенные widget IDs и является правильным способом namespace isolation; случайная смена разряда ID не является доказанным решением. Отдельные GUI-панели показывают, что `GuiZSet`: меньший z рисуется спереди; tooltip dimming нужно разбирать отдельно от ID collisions.
+
+### Наблюдение пользователя (исторический transfer-блокер)
+
 
 - Органайзер корректно видит только spell-карты, находящиеся в обычном инвентаре.
 - Spell-карты внутри посохов больше не показываются — это правильное поведение для текущего inner loop.
