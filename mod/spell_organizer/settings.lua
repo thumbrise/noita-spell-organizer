@@ -1,6 +1,6 @@
 dofile("data/scripts/lib/mod_settings.lua")
 
-local mod_id = "noita_inventory"
+local mod_id = "spell_organizer"
 mod_settings_version = 1
 
 local keys = {}

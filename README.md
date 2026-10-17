@@ -1,10 +1,10 @@
-# NoitaInventory
+# Spell Organizer
 
 Improved inventory mod for Noita.
 
 ## Development
 
-The source mod lives in `mod/noita_inventory/`. The first milestone is a minimal Hello Mod that logs its load and prints a message when the player spawns.
+The source mod lives in `mod/spell_organizer/`. The product is branded **Spell Organizer**: a progression-preserving organizer for acquired spell cards.
 
 ## Design
 

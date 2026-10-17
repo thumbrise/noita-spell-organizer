@@ -1,9 +1,11 @@
 dofile_once("data/scripts/lib/utilities.lua")
 dofile_once("data/scripts/gun/gun_enums.lua")
 
+local BRAND_NAME = "Spell Organizer"
+
 -- Press O (configurable in mod settings) to open the player-bound organizer.
-local STORAGE_NAME = "noita_inventory_storage"
-local OPEN_SETTING_ID = "noita_inventory.open_key"
+local STORAGE_NAME = "spell_organizer_storage"
+local OPEN_SETTING_ID = "spell_organizer.open_key"
 local ESCAPE_KEY_CODE = 41
 local open_key_label = nil
 local open_key_code = 18 -- O; see data/scripts/debug/keycodes.lua
@@ -31,9 +33,9 @@ local SEARCH_INPUT_ID = 9137200
 
 local function freeze_player_controls()
     for _, player in ipairs(EntityGetWithTag("player_unit") or {}) do
-        local disabler = EntityCreateNew("noita_inventory_controls_disabler")
-        EntityAddTag(disabler, "noita_inventory_controls_disabler")
-        EntityAddTag(disabler, "noita_inventory_non_toxic_status")
+        local disabler = EntityCreateNew("spell_organizer_controls_disabler")
+        EntityAddTag(disabler, "spell_organizer_controls_disabler")
+        EntityAddTag(disabler, "spell_organizer_non_toxic_status")
         EntityAddChild(player, disabler)
         EntityAddComponent2(disabler, "InheritTransformComponent")
         EntityAddComponent2(disabler, "GameEffectComponent", {
@@ -45,7 +47,7 @@ local function freeze_player_controls()
 end
 
 local function unfreeze_player_controls()
-    for _, disabler in ipairs(EntityGetWithTag("noita_inventory_controls_disabler") or {}) do
+    for _, disabler in ipairs(EntityGetWithTag("spell_organizer_controls_disabler") or {}) do
         local effect = EntityGetFirstComponentIncludingDisabled(disabler, "GameEffectComponent")
         if effect ~= nil then
             ComponentSetValue2(effect, "frames", 1)
@@ -183,7 +185,7 @@ local function absorb_one(spell, source, organizer)
     else
         EntitySetComponentsWithTagEnabled(spell, "enabled_in_world", true)
     end
-    print("[NoitaInventory] absorb failed: " .. tostring(spell))
+    print("[SpellOrganizer] absorb failed: " .. tostring(spell))
     return false
 end
 
@@ -278,7 +280,7 @@ local function drop_one_spell_from_organizer(spell, player)
 
     local full_inventory = find_full_inventory(player)
     if full_inventory == nil then
-        print("[NoitaInventory] return failed: inventory_full not found")
+        print("[SpellOrganizer] return failed: inventory_full not found")
         return false
     end
 
@@ -334,7 +336,7 @@ local function migrate_legacy_book(player, storage)
     for _, inventory in ipairs(EntityGetAllChildren(player) or {}) do
         if EntityGetName(inventory) == "inventory_quick" then
             for _, item in ipairs(EntityGetAllChildren(inventory) or {}) do
-                if EntityGetFilename(item) == "mods/noita_inventory/files/entities/spell_organizer.xml" then
+                if EntityGetFilename(item) == "mods/spell_organizer/files/entities/spell_organizer.xml" then
                     local failed = false
                     for _, card in ipairs(EntityGetAllChildren(item) or {}) do
                         EntityRemoveFromParent(card)
@@ -343,12 +345,12 @@ local function migrate_legacy_book(player, storage)
                             EntityRemoveFromParent(card)
                             EntityAddChild(item, card)
                             failed = true
-                            print("[NoitaInventory] migration failed for card: " .. tostring(card))
+                            print("[SpellOrganizer] migration failed for card: " .. tostring(card))
                         end
                     end
                     if not failed and #(EntityGetAllChildren(item) or {}) == 0 then
                         EntityKill(item)
-                        print("[NoitaInventory] migrated legacy organizer")
+                        print("[SpellOrganizer] migrated legacy organizer")
                     end
                 end
             end
@@ -357,7 +359,7 @@ local function migrate_legacy_book(player, storage)
 end
 
 function OnModInit()
-    print("[NoitaInventory] loaded")
+    print("[SpellOrganizer] loaded")
 end
 
 function OnPlayerSpawned(player_entity)
@@ -463,8 +465,8 @@ local function draw_type_filters(x, y)
         local type_value = entry[3]
         local active = (i == 1 and selected_type == nil) or (i > 1 and selected_type == type_value)
         local icon = i == 1
-            and "mods/noita_inventory/files/gui/buttons/type_filter_all.png"
-            or ("mods/noita_inventory/files/gui/buttons/type_filter_" .. tostring(i - 2) .. ".png")
+            and "mods/spell_organizer/files/gui/buttons/type_filter_all.png"
+            or ("mods/spell_organizer/files/gui/buttons/type_filter_" .. tostring(i - 2) .. ".png")
         if active then
             GuiZSetForNextWidget(organizer_gui, 1)
             GuiImage(organizer_gui, 9137450 + i, x + (i - 1) * 19, y, "mods/spell_lab_shugged/files/gui/buttons/spell_box_active.png", 1, 1, 0)
@@ -539,7 +541,7 @@ local function handle_organizer_clicks(cells, player)
     for _, cell in ipairs(cells) do
         if cell.clicked then
             if action_group_can_return(cell.group, player) then
-                print("[NoitaInventory] dropped one spell: " .. cell.group.action_id)
+                print("[SpellOrganizer] dropped one spell: " .. cell.group.action_id)
             end
             return
         end
@@ -574,11 +576,11 @@ function OnWorldPostUpdate()
         if not organizer_open then
             set_search_focus(false)
         end
-        print("[NoitaInventory] organizer panel " .. (organizer_open and "opened" or "closed"))
+        print("[SpellOrganizer] panel " .. (organizer_open and "opened" or "closed"))
     elseif not inventory_open and InputIsKeyJustDown(ESCAPE_KEY_CODE) and organizer_open then
         organizer_open = false
         set_search_focus(false)
-        print("[NoitaInventory] organizer panel closed")
+        print("[SpellOrganizer] panel closed")
     end
 
     if not organizer_open and not inventory_open then
@@ -587,7 +589,7 @@ function OnWorldPostUpdate()
     end
 
     GuiStartFrame(organizer_gui)
-    GuiIdPushString(organizer_gui, "NOITA_INVENTORY_ORGANIZER")
+    GuiIdPushString(organizer_gui, "SPELL_ORGANIZER_GUI")
     GuiOptionsAdd(organizer_gui, GUI_OPTION.DrawAlwaysVisible)
     GuiOptionsAdd(organizer_gui, GUI_OPTION.NoPositionTween)
     GuiOptionsAdd(organizer_gui, GUI_OPTION.HandleDoubleClickAsClick)
