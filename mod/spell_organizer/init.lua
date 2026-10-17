@@ -549,6 +549,10 @@ local function handle_organizer_clicks(cells, player)
 end
 
 function OnWorldPostUpdate()
+    -- Always advance this GUI, even while hidden. Otherwise its previous
+    -- interactive widgets can keep capturing clicks after the panel closes.
+    GuiStartFrame(organizer_gui)
+
     local player = get_player()
     if player == nil then
         return
@@ -588,7 +592,6 @@ function OnWorldPostUpdate()
         return
     end
 
-    GuiStartFrame(organizer_gui)
     GuiIdPushString(organizer_gui, "SPELL_ORGANIZER_GUI")
     GuiOptionsAdd(organizer_gui, GUI_OPTION.DrawAlwaysVisible)
     GuiOptionsAdd(organizer_gui, GUI_OPTION.NoPositionTween)
