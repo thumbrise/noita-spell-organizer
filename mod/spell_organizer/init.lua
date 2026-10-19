@@ -1,6 +1,9 @@
 dofile_once("data/scripts/lib/utilities.lua")
 dofile_once("data/scripts/gun/gun_enums.lua")
 
+-- Rebuild the live spell deck after Noita's spell-refresh pickup.
+ModLuaFileAppend("data/scripts/items/spell_refresh.lua", "mods/spell_organizer/files/spell_refresh_append.lua")
+
 local BRAND_NAME = "Spell Organizer"
 
 -- Organizer is visible only alongside vanilla inventory.
@@ -328,6 +331,15 @@ local function get_storage(player)
     return storage
 end
 
+-- Called by the spell-refresh pickup append. The engine helper accepts a
+-- container and rebuilds ItemAction state for every stored card.
+function SpellOrganizerRefreshStoredSpells(player)
+    local storage = get_storage(player)
+    if storage ~= nil then
+        GameRegenItemActionsInContainer(storage)
+    end
+end
+
 local function migrate_legacy_book(player, storage)
     for _, inventory in ipairs(EntityGetAllChildren(player) or {}) do
         if EntityGetName(inventory) == "inventory_quick" then
@@ -583,7 +595,7 @@ function OnWorldPostUpdate()
     local organizer_cells = draw_spell_grid(organizer_groups, grid_x, grid_y)
     handle_organizer_clicks(organizer_cells, player)
     GuiOptionsAddForNextWidget(organizer_gui, GUI_OPTION.DrawNoHoverAnimation)
-    if GuiButton(organizer_gui, 9137999, modal_x + 10, modal_y + PANEL_H - 22, "Absorb all") then
+    if GuiButton(organizer_gui, 9137999, modal_x + 4, modal_y + PANEL_H - 12, "Absorb") then
         local count = absorb_available_spells(player, storage)
         GamePrint("Spell Organizer: absorbed " .. tostring(count))
     end
